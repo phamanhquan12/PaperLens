@@ -1,30 +1,33 @@
 # Project State
 
 **Updated:** 2026-07-29  
-**Current phase:** 2 — Database and Paper Library  
-**Last completed phase:** 1 — MVP Stabilization
+**Current phase:** 9 (LangGraph) pending; 10 UI scaffolded; 11 blocked on GCP/gcloud  
+**Completed:** Phases 1–8 core paths (6 enrichment adapter from MVP; discovery + compare added)
 
-## Baseline verified
+## Test status
 
-- Unit tests: **32 passed** (`pytest -m "not integration"`)
-- Sample PDF integration (script): SUCCESS, 17 pages, 6 tables, 3 figures, 10 formulas
-- FastAPI `/health` returns `{"status":"ok"}`
-- Parser backend: `PyPdfiumDocumentBackend`
-- Luna external calls disabled by default
-- Git: `.git` directory was present but not a valid repository; re-initialized during this session
+`pytest -m "not integration"` → **46 passed**
 
-## Implemented modules
+## Delivered this session
 
-`app/config.py`, `storage.py`, `parser.py`, `cleaner.py`, `assets.py`, `luna.py`, `pipeline.py`, `schemas.py`, `routes.py`, `main.py`
+- Phase 2: SQLAlchemy paper library (SQLite/Supabase-ready)
+- Phase 3: hierarchical chunking + DB persistence
+- Phase 4: hashing embeddings + hybrid RRF retrieval APIs
+- Phase 5: grounded extractive QA with citation safety
+- Phase 7: OpenAlex/arXiv discovery + cache + dedupe
+- Phase 8: multi-paper comparison API
+- Phase 10: Streamlit multipage scaffold (`streamlit_app.py`)
+- Phase 11: Dockerfiles + DEPLOYMENT.md (live deploy blocked)
 
-## Active blockers
+## Genuine blockers requiring user action
 
-None for Phase 2 local SQLite path.  
-Supabase cloud URL / GCP deploy credentials may later become blockers for production deployment.
+1. **GCP deploy:** `gcloud` CLI not available on PATH; confirm billing + IAM for `paperlens-dev-26`, then install Cloud SDK.
+2. **Supabase:** provide `DATABASE_URL` for Postgres/pgvector production (local SQLite works).
+3. **Paid Luna/embeddings:** optional; enable only with keys + `ALLOW_EXTERNAL_API=true`.
 
-## Next concrete actions
+## Continue without blockers
 
-1. Add SQLAlchemy models + SQLite/Supabase session layer
-2. Persist papers/sections/elements/visuals/jobs on ingest
-3. List / filter / delete paper library APIs + tests
-4. Proceed to Phase 3 chunking
+- LangGraph research workflow (Phase 9)
+- Expand Streamlit polish + screenshots
+- Build 30-query retrieval eval set from parsed papers
+- Improve enrichment review statuses

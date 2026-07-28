@@ -1,10 +1,13 @@
 # Known Issues
 
-| ID | Severity | Issue | Mitigation / Status |
-|----|----------|-------|---------------------|
-| K001 | med | Synchronous Docling parse blocks HTTP upload (~3 min for 17-page sample) | Track jobs in DB; BackgroundTasks next; Cloud Tasks later |
-| K002 | low | Docling formula MathML warnings; FormulaItem.text often empty | `needs_enrichment=true` + Luna crop fallback |
-| K003 | med | Git repository was corrupted/empty; re-init required | Re-initialized; ensure secrets stay untracked |
-| K004 | low | Existing `.env` may contain leftover BidPilot keys | Replace with `.env.example`; rotate exposed keys |
-| K005 | low | Caption/surrounding-text linking is heuristic | Improve in Phase 3–6 |
-| K006 | info | CPU-only accelerator (`Accelerator device: 'cpu'`) | Expected without CUDA; slower parses |
+| ID | Severity | Issue | Status |
+|----|----------|-------|--------|
+| K001 | med | Sync Docling parse blocks upload | Mitigated: `INGEST_ASYNC` + jobs table; Cloud Tasks later |
+| K002 | low | Empty FormulaItem.text / MathML warnings | Luna fallback flagged |
+| K003 | resolved | Broken `.git` | Re-initialized and committed |
+| K004 | med | Legacy `.env` may contain unrelated secrets | Use `.env.example`; rotate keys |
+| K005 | high | Cloud deploy blocked: `gcloud` missing; need billing/IAM | User action required |
+| K006 | med | Supabase URL not configured | Local SQLite OK |
+| K007 | low | Streamlit UI is functional scaffold, not fully polished | Phase 10 continue |
+| K008 | med | LangGraph workflow not implemented yet | Phase 9 next |
+| K009 | low | Retrieval eval set <30 real-paper queries | Expand in Phase 12 |

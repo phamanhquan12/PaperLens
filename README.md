@@ -88,6 +88,14 @@ Never commit `.env` or API keys.
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
+Streamlit UI (separate terminal):
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+$env:PAPERLENS_API_BASE = "http://127.0.0.1:8000"
+streamlit run streamlit_app.py
+```
+
 Health check:
 
 ```powershell

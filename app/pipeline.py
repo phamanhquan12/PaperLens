@@ -9,11 +9,13 @@ import uuid
 from pathlib import Path
 
 from app.assets import extract_assets
+from app.chunking import chunk_paper_document, persist_chunks
 from app.cleaner import audit_to_csv, build_audit_and_clean
 from app.config import Settings, get_settings
 from app.db.models import Job
 from app.db.repository import PaperRepository
 from app.db.session import session_scope
+from app.embeddings import index_paper_chunks
 from app.parser import DoclingParser, is_pdf_bytes, sanitize_filename
 from app.schemas import ArtifactPaths, IngestionResponse, PaperDocument
 from app.storage import (
@@ -304,6 +306,43 @@ def ingest_pdf_bytes(
             parse_status=parse_result.validation.status,
             job_id=job_id,
         )
+
+        # Structure-aware chunking (Phase 3)
+        try:
+            chunk_result = chunk_paper_document(paper_doc)
+            persist_chunks(pid, chunk_result, settings=cfg)
+            chunk_key = paper_normalized_key(pid, "chunks_report.json")
+            store.save_json(
+                chunk_key,
+                {
+                    "metrics": chunk_result.metrics,
+                    "parent_preview": [
+                        {
+                            "section_path": p.section_path,
+                            "pages": [p.page_start, p.page_end],
+                            "tokens": p.token_count,
+                            "chars": len(p.content),
+                        }
+                        for p in chunk_result.parent_chunks[:20]
+                    ],
+                    "child_types": {
+                        t: sum(1 for c in chunk_result.child_chunks if c.chunk_type == t)
+                        for t in sorted({c.chunk_type for c in chunk_result.child_chunks})
+                    },
+                },
+            )
+            report["chunking_statistics"] = chunk_result.metrics
+            store.save_json(report_key, report)
+            try:
+                emb_stats = index_paper_chunks(pid, settings=cfg)
+                report["embedding_statistics"] = emb_stats
+                store.save_json(report_key, report)
+            except Exception as emb_exc:
+                logger.warning("Embedding index failed for %s: %s", pid, emb_exc)
+                warnings.append(f"embedding_failed: {emb_exc}")
+        except Exception as exc:
+            logger.warning("Chunking failed for %s: %s", pid, exc)
+            warnings.append(f"chunking_failed: {exc}")
 
         logger.info("Ingested paper_id=%s pages=%s", pid, paper_doc.page_count)
         return IngestionResponse(

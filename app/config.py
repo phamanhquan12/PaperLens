@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     database_echo: bool = False
     ingest_async: bool = False
 
+    embedding_provider: str = "hashing"
+    embedding_model: str = ""
+    embedding_api_key: str | None = None
+    embedding_base_url: str | None = None
+    embedding_dimensions: int = 384
+    retrieval_top_k: int = 8
+    retrieval_use_mmr: bool = False
+
     @field_validator("local_storage_root", mode="before")
     @classmethod
     def _coerce_path(cls, value: object) -> Path:

@@ -147,6 +147,38 @@ class DeletePaperResponse(BaseModel):
     storage_objects_deleted: int = 0
 
 
+class RetrieveRequest(BaseModel):
+    query: str
+    paper_id: str | None = None
+    top_k: int = 8
+    use_mmr: bool = False
+
+
+class IndexRequest(BaseModel):
+    force: bool = False
+
+
+class QARequest(BaseModel):
+    question: str
+    top_k: int = 6
+    conversation_id: str | None = None
+
+
+class DiscoverRequest(BaseModel):
+    query: str
+    source: Literal["openalex", "arxiv", "auto"] = "auto"
+    year_min: int | None = None
+    year_max: int | None = None
+    limit: int = 10
+    force_refresh: bool = False
+
+
+class CompareRequest(BaseModel):
+    paper_ids: list[str]
+    question: str
+    top_k_per_paper: int = 4
+
+
 class PaperMetadataResponse(BaseModel):
     paper_id: str
     filename: str
