@@ -15,10 +15,18 @@
 |-------|--------|
 | Unit (`pytest -m "not integration"`) | **44 passed** |
 
-## Retrieval (synthetic fixture)
+## Retrieval (synthetic fixture eval)
 
-Hashing embeddings + hybrid RRF; see `tests/test_retrieval.py`.  
-Recall@5 on 2 fixture queries ≥ 0.5 in unit test assertion.
+Command: `python scripts/run_retrieval_eval.py`
+
+| Metric | Value |
+|--------|------:|
+| n_cases | 5 |
+| MRR | 1.0 |
+| Recall@5 | 1.0 |
+| Recall@10 | 1.0 |
+
+Source: `evaluation/results/retrieval_eval.json` (hashing embeddings; not a multi-paper human-labeled set yet).
 
 ## QA
 
