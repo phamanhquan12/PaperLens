@@ -1,0 +1,70 @@
+{
+  "metrics": {
+    "n_cases": 5,
+    "MRR": 1.0,
+    "Recall@5": 1.0,
+    "Recall@10": 1.0
+  },
+  "details": [
+    {
+      "query": "temperature scaling calibration",
+      "hit_rank": 1,
+      "diagnostics": {
+        "sparse_candidates": 12,
+        "dense_candidates": 12,
+        "fused_candidates": 12,
+        "returned": 10,
+        "mmr": false,
+        "paper_id": "eval1"
+      }
+    },
+    {
+      "query": "expected calibration error ECE",
+      "hit_rank": 1,
+      "diagnostics": {
+        "sparse_candidates": 12,
+        "dense_candidates": 12,
+        "fused_candidates": 12,
+        "returned": 10,
+        "mmr": false,
+        "paper_id": "eval1"
+      }
+    },
+    {
+      "query": "histogram binning method",
+      "hit_rank": 1,
+      "diagnostics": {
+        "sparse_candidates": 5,
+        "dense_candidates": 12,
+        "fused_candidates": 12,
+        "returned": 10,
+        "mmr": false,
+        "paper_id": "eval1"
+      }
+    },
+    {
+      "query": "neural network confidence",
+      "hit_rank": 1,
+      "diagnostics": {
+        "sparse_candidates": 7,
+        "dense_candidates": 12,
+        "fused_candidates": 12,
+        "returned": 10,
+        "mmr": false,
+        "paper_id": "eval1"
+      }
+    },
+    {
+      "query": "ImageNet reliability",
+      "hit_rank": 1,
+      "diagnostics": {
+        "sparse_candidates": 7,
+        "dense_candidates": 12,
+        "fused_candidates": 12,
+        "returned": 10,
+        "mmr": false,
+        "paper_id": "eval1"
+      }
+    }
+  ]
+}
