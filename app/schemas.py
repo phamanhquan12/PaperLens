@@ -179,6 +179,13 @@ class CompareRequest(BaseModel):
     top_k_per_paper: int = 4
 
 
+class ResearchRequest(BaseModel):
+    research_question: str
+    selected_papers: list[str] | None = None
+    enable_external: bool = False
+    max_external_searches: int = 0
+
+
 class PaperMetadataResponse(BaseModel):
     paper_id: str
     filename: str

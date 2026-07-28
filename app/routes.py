@@ -30,6 +30,7 @@ from app.schemas import (
     PaperLibraryResponse,
     PaperMetadataResponse,
     QARequest,
+    ResearchRequest,
     RetrieveRequest,
     VisualElement,
 )
@@ -37,6 +38,7 @@ from app.compare import compare_papers
 from app.discovery import DiscoveryError, discover_papers, find_library_duplicates
 from app.embeddings import index_paper_chunks
 from app.qa import answer_paper_question
+from app.research_graph import run_research
 from app.retrieval import retrieve
 
 from app.storage import (
@@ -445,6 +447,21 @@ def compare_endpoint(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return result.model_dump(mode="json")
+
+
+@router.post("/research")
+def research_endpoint(
+    body: ResearchRequest,
+    settings: Settings = Depends(get_settings),
+) -> dict[str, Any]:
+    report = run_research(
+        body.research_question,
+        selected_papers=body.selected_papers,
+        settings=settings,
+        enable_external=body.enable_external,
+        max_external_searches=body.max_external_searches,
+    )
+    return report.model_dump(mode="json")
 
 
 @router.post("/papers/{paper_id}/enrich", response_model=EnrichResponse)

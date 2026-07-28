@@ -1,33 +1,23 @@
 # Project State
 
 **Updated:** 2026-07-29  
-**Current phase:** 9 (LangGraph) pending; 10 UI scaffolded; 11 blocked on GCP/gcloud  
-**Completed:** Phases 1–8 core paths (6 enrichment adapter from MVP; discovery + compare added)
+**Unit tests:** **47 passed**  
+**Active blocker:** Cloud Run deploy (no `gcloud` on PATH; need Supabase URL + GCP IAM/billing)
 
-## Test status
+## Completed this autonomous run
 
-`pytest -m "not integration"` → **46 passed**
+Phases **1–9** core implementations + Streamlit scaffold + Dockerfiles.
 
-## Delivered this session
+## User actions required to unblock Phase 11
 
-- Phase 2: SQLAlchemy paper library (SQLite/Supabase-ready)
-- Phase 3: hierarchical chunking + DB persistence
-- Phase 4: hashing embeddings + hybrid RRF retrieval APIs
-- Phase 5: grounded extractive QA with citation safety
-- Phase 7: OpenAlex/arXiv discovery + cache + dedupe
-- Phase 8: multi-paper comparison API
-- Phase 10: Streamlit multipage scaffold (`streamlit_app.py`)
-- Phase 11: Dockerfiles + DEPLOYMENT.md (live deploy blocked)
+1. Install Google Cloud SDK and authenticate (`gcloud auth login` + ADC).
+2. Confirm billing enabled on `paperlens-dev-26`.
+3. Provide Supabase Postgres `DATABASE_URL`.
+4. Confirm Cloud Run + Artifact Registry permissions.
 
-## Genuine blockers requiring user action
+## Can continue without that blocker
 
-1. **GCP deploy:** `gcloud` CLI not available on PATH; confirm billing + IAM for `paperlens-dev-26`, then install Cloud SDK.
-2. **Supabase:** provide `DATABASE_URL` for Postgres/pgvector production (local SQLite works).
-3. **Paid Luna/embeddings:** optional; enable only with keys + `ALLOW_EXTERNAL_API=true`.
-
-## Continue without blockers
-
-- LangGraph research workflow (Phase 9)
-- Expand Streamlit polish + screenshots
-- Build 30-query retrieval eval set from parsed papers
-- Improve enrichment review statuses
+- Expand Streamlit polish / screenshots
+- Build 30-query retrieval evaluation set from local papers
+- Optional live Luna enrichment when API key intentionally enabled
+- Portfolio docs / DEMO_SCRIPT

@@ -25,6 +25,7 @@ with st.sidebar:
             "Chat",
             "Discover",
             "Compare",
+            "Research",
             "Settings",
         ],
     )
@@ -135,6 +136,29 @@ elif page == "Compare":
                 json={"paper_ids": paper_ids, "question": question},
             )
             st.json(result)
+        except Exception as exc:
+            st.error(str(exc))
+
+elif page == "Research":
+    st.subheader("Research Workspace")
+    question = st.text_area("Research question", "Compare calibration methods and limitations")
+    ids = st.text_input("Optional paper IDs (comma-separated)")
+    if st.button("Run workflow"):
+        payload = {
+            "research_question": question,
+            "enable_external": False,
+            "max_external_searches": 0,
+        }
+        if ids.strip():
+            payload["selected_papers"] = [x.strip() for x in ids.split(",") if x.strip()]
+        try:
+            with st.spinner("Running bounded LangGraph workflow..."):
+                result = api_post("/research", json=payload)
+            st.markdown(result.get("final_report") or "")
+            with st.expander("Tool calls"):
+                st.json(result.get("tool_calls") or [])
+            with st.expander("Critic feedback"):
+                st.json(result.get("critic_feedback") or [])
         except Exception as exc:
             st.error(str(exc))
 
