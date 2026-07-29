@@ -186,6 +186,39 @@ class ResearchRequest(BaseModel):
     max_external_searches: int = 0
 
 
+class AgentRequest(BaseModel):
+    message: str
+    selected_papers: list[str] = Field(default_factory=list)
+    conversation_id: str | None = None
+    # Optional image as a data URL (data:image/png;base64,...). Raw bytes are
+    # never persisted — only MIME/size metadata is stored with the turn.
+    image: str | None = None
+
+
+class AgentResponse(BaseModel):
+    conversation_id: str
+    answer: str
+    grounded: bool = False
+    citations: list[dict[str, Any]] = Field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    guardrail_notes: list[str] = Field(default_factory=list)
+
+
+class AgentConversationTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    has_image: bool = False
+    image_mime: str | None = None
+    artifact: dict[str, Any] | None = None
+
+
+class AgentConversationResponse(BaseModel):
+    conversation_id: str
+    selected_papers: list[str] = Field(default_factory=list)
+    turns: list[AgentConversationTurn] = Field(default_factory=list)
+
+
 class PaperMetadataResponse(BaseModel):
     paper_id: str
     filename: str

@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "public": true,
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/frontend/$1" }
+  ],
+  "headers": [
+    {
+      "source": "/frontend/config.js",
+      "headers": [{ "key": "Cache-Control", "value": "no-store" }]
+    }
+  ]
+}

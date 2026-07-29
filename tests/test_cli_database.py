@@ -42,6 +42,23 @@ def test_settings_fallback_from_supabase_url():
     assert settings.database_info.connection_mode == "transaction_pooler"
 
 
+def test_bidpilot_openai_environment_aliases(monkeypatch):
+    monkeypatch.setenv("BIDPILOT_OPENAI_API_KEY", "alias-key")
+    monkeypatch.setenv("BIDPILOT_OPENAI_ANSWER_MODEL", "alias-chat-model")
+    monkeypatch.setenv("BIDPILOT_OPENAI_EMBEDDING_MODEL", "alias-embedding-model")
+    monkeypatch.setenv("BIDPILOT_EMBEDDING_PROVIDER", "openai")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.llm_api_key == "alias-key"
+    assert settings.llm_model == "alias-chat-model"
+    assert settings.luna_api_key == "alias-key"
+    assert settings.luna_model == "alias-chat-model"
+    assert settings.embedding_api_key == "alias-key"
+    assert settings.embedding_model == "alias-embedding-model"
+    assert settings.embedding_provider == "openai"
+
+
 def test_check_database_malformed_url():
     db_session.reset_engine()
     with pytest.raises(Exception):

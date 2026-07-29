@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 from app.config import Settings, get_settings
-from app.discovery import DiscoveryPaper, discover_papers, find_library_duplicates
+from app.discovery import (
+    DiscoveryPaper,
+    discover_papers,
+    find_library_duplicates,
+    search_arxiv,
+)
 from app.db.repository import PaperRepository
 from app.db.session import init_db, reset_engine, session_scope
 from app.storage import LocalStorage
@@ -81,3 +86,43 @@ def test_duplicate_detection(disc_env):
     )
     matches = find_library_duplicates(cand, settings=settings)
     assert "dup1" in matches
+
+
+def test_arxiv_uses_https_and_redirect_safe_client(monkeypatch):
+    captured = {}
+    xml = """<?xml version="1.0"?>
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <title>Test Paper</title><summary>Abstract</summary>
+        <published>2025-01-01T00:00:00Z</published>
+        <id>https://arxiv.org/abs/2501.00001</id>
+        <author><name>Researcher</name></author>
+      </entry>
+    </feed>"""
+
+    class FakeResponse:
+        text = xml
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url, **kwargs):
+            captured["url"] = url
+            return FakeResponse()
+
+    monkeypatch.setattr("app.discovery.httpx.Client", FakeClient)
+    results = search_arxiv("calibration")
+
+    assert captured["url"].startswith("https://export.arxiv.org/")
+    assert captured["client_kwargs"]["follow_redirects"] is True
+    assert results[0].arxiv_id == "2501.00001"

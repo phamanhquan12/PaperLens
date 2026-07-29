@@ -174,3 +174,46 @@ class Job(Base):
     )
 
     paper: Mapped[Paper | None] = relationship(back_populates="jobs")
+
+
+class AgentConversation(Base):
+    """Persisted unified-agent conversation (SQLite / Postgres)."""
+
+    __tablename__ = "agent_conversations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    selected_papers: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+    messages: Mapped[list["AgentMessage"]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        order_by="AgentMessage.order_index",
+    )
+
+
+class AgentMessage(Base):
+    """Serializable agent turn for history restore and LangChain replay."""
+
+    __tablename__ = "agent_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_conversations.id", ondelete="CASCADE"), index=True
+    )
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)  # human|ai|tool
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    tool_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    tool_calls: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    artifact: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Image metadata only — never store raw base64 image bytes.
+    message_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    conversation: Mapped["AgentConversation"] = relationship(back_populates="messages")

@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.db.url_utils import classify_database_url, normalize_sqlalchemy_url
@@ -19,6 +19,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     app_env: Literal["development", "staging", "production"] = "development"
@@ -34,13 +35,21 @@ class Settings(BaseSettings):
     docling_ocr_mode: Literal["off", "on", "auto"] = "auto"
     docling_images_scale: float = 1.5
     docling_threads: int = 1
+    docling_accelerator_device: Literal["auto", "cpu", "cuda"] = "auto"
+    docling_cuda_use_flash_attention2: bool = False
     docling_do_formula_enrichment: bool = False
     docling_do_code_enrichment: bool = False
 
     luna_enabled: bool = False
     luna_provider: str = "openai"
-    luna_model: str = ""
-    luna_api_key: str | None = None
+    luna_model: str = Field(
+        default="",
+        validation_alias=AliasChoices("LUNA_MODEL", "BIDPILOT_OPENAI_ANSWER_MODEL"),
+    )
+    luna_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LUNA_API_KEY", "BIDPILOT_OPENAI_API_KEY"),
+    )
     luna_base_url: str | None = None
     luna_max_retries: int = 2
     luna_request_delay_seconds: float = 1.0
@@ -62,18 +71,55 @@ class Settings(BaseSettings):
     database_statement_timeout_ms: int = 30000
     ingest_async: bool = False
 
-    embedding_provider: str = "hashing"
-    embedding_model: str = ""
-    embedding_api_key: str | None = None
+    embedding_provider: str = Field(
+        default="hashing",
+        validation_alias=AliasChoices("EMBEDDING_PROVIDER", "BIDPILOT_EMBEDDING_PROVIDER"),
+    )
+    embedding_model: str = Field(
+        default="",
+        validation_alias=AliasChoices("EMBEDDING_MODEL", "BIDPILOT_OPENAI_EMBEDDING_MODEL"),
+    )
+    embedding_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("EMBEDDING_API_KEY", "BIDPILOT_OPENAI_API_KEY"),
+    )
     embedding_base_url: str | None = None
     embedding_dimensions: int = 384
     retrieval_top_k: int = 8
     retrieval_use_mmr: bool = False
 
+    llm_enabled: bool = False
+    llm_provider: str = "openai"
+    llm_model: str = Field(
+        default="",
+        validation_alias=AliasChoices("LLM_MODEL", "BIDPILOT_OPENAI_ANSWER_MODEL"),
+    )
+    llm_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LLM_API_KEY", "BIDPILOT_OPENAI_API_KEY"),
+    )
+    llm_base_url: str | None = None
+    llm_timeout_seconds: float = 60.0
+    llm_max_retries: int = 2
+
     paperlens_api_base: str = "http://127.0.0.1:8000"
+    cors_allowed_origins: str = (
+        "http://127.0.0.1:3000,http://localhost:3000,"
+        "http://127.0.0.1:8080,http://localhost:8080"
+    )
+    cors_allow_origin_regex: str = (
+        r"https://paperlens-ui-[a-z0-9-]+\.(?:a\.run\.app|asia-southeast1\.run\.app)"
+        r"|https://[a-z0-9-]+\.vercel\.app"
+    )
     langsmith_enabled: bool = False
     langsmith_tracing: bool = False
     allow_paid_evaluation: bool = False
+
+    # Unified agent request/response safety limits (deterministic guardrails).
+    agent_max_message_chars: int = 8000
+    agent_max_selected_papers: int = 8
+    agent_max_image_bytes: int = 2 * 1024 * 1024
+    agent_history_limit: int = 24
 
     @field_validator("local_storage_root", mode="before")
     @classmethod
@@ -104,6 +150,10 @@ class Settings(BaseSettings):
     @property
     def effective_migration_url(self) -> str:
         return self.migration_database_url or self.database_url
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
 
 
 @lru_cache

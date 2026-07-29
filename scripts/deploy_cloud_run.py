@@ -33,27 +33,15 @@ def run(cmd: list[str]) -> int:
     return completed.returncode
 
 
-def deploy_api() -> int:
-    image = f"{AR_IMAGE_API}:latest"
-    build = [
-        gcloud(),
-        "builds",
-        "submit",
-        ".",
-        f"--project={PROJECT}",
-        f"--tag={image}",
-        "--timeout=3600",
-        "--machine-type=e2-highcpu-8",
-        "--gcs-log-dir=",  # keep default
-    ]
-    # Use cloudbuild with Dockerfile.backend via config substitute
-    # gcloud builds submit --tag uses Dockerfile by default; rename trick via config file.
+def deploy_api(*, gpu: bool = False, skip_build: bool = False) -> int:
+    image = f"{AR_IMAGE_API}:{'gpu-latest' if gpu else 'latest'}"
+    dockerfile = "Dockerfile.backend.gpu" if gpu else "Dockerfile.backend"
     cfg = Path("cloudbuild.api.yaml")
     cfg.write_text(
         f"""
 steps:
   - name: gcr.io/cloud-builders/docker
-    args: ['build', '-t', '{image}', '-f', 'Dockerfile.backend', '.']
+    args: ['build', '-t', '{image}', '-f', '{dockerfile}', '.']
 images: ['{image}']
 timeout: 3600s
 options:
@@ -62,46 +50,65 @@ options:
         + "\n",
         encoding="utf-8",
     )
-    code = run(
-        [
-            gcloud(),
-            "builds",
-            "submit",
-            ".",
-            f"--project={PROJECT}",
-            f"--config={cfg}",
-        ]
-    )
-    if code != 0:
-        return code
+    if not skip_build:
+        code = run(
+            [
+                gcloud(),
+                "builds",
+                "submit",
+                ".",
+                f"--project={PROJECT}",
+                f"--config={cfg}",
+            ]
+        )
+        if code != 0:
+            return code
 
-    return run(
-        [
-            gcloud(),
-            "run",
-            "deploy",
-            "paperlens-api",
-            f"--project={PROJECT}",
-            f"--region={REGION}",
-            f"--image={image}",
-            f"--service-account={RUNTIME_SA}",
-            "--allow-unauthenticated",
-            "--port=8080",
-            "--memory=4Gi",
-            "--cpu=2",
-            "--timeout=3600",
-            "--concurrency=5",
-            "--min-instances=0",
-            "--max-instances=3",
-            "--set-env-vars=APP_ENV=production,STORAGE_BACKEND=gcs,"
-            f"GCP_PROJECT_ID={PROJECT},GCS_BUCKET_NAME=paperlens-dev-26-paper-storage,"
-            "DOCLING_OCR_MODE=off,DOCLING_THREADS=1,"
-            "LUNA_ENABLED=false,ALLOW_EXTERNAL_API=false,"
-            "LANGSMITH_ENABLED=false,LANGSMITH_TRACING=false,"
-            "EMBEDDING_PROVIDER=hashing,INGEST_ASYNC=false",
-            "--set-secrets=DATABASE_URL=paperlens-database-url:latest",
-        ]
-    )
+    deploy = [
+        gcloud(),
+        "run",
+        "deploy",
+        "paperlens-api",
+        f"--project={PROJECT}",
+        f"--region={REGION}",
+        f"--image={image}",
+        f"--service-account={RUNTIME_SA}",
+        "--allow-unauthenticated",
+        "--port=8080",
+        f"--memory={'16Gi' if gpu else '4Gi'}",
+        f"--cpu={4 if gpu else 2}",
+        "--timeout=3600",
+        f"--concurrency={1 if gpu else 5}",
+        "--min-instances=0",
+        f"--max-instances={1 if gpu else 3}",
+        f"--max={1 if gpu else 10}",
+        "--set-env-vars=APP_ENV=production,STORAGE_BACKEND=gcs,"
+        f"GCP_PROJECT_ID={PROJECT},GCS_BUCKET_NAME=paperlens-dev-26-paper-storage,"
+        f"DOCLING_OCR_MODE=off,DOCLING_THREADS={4 if gpu else 1},"
+        f"DOCLING_ACCELERATOR_DEVICE={'cuda' if gpu else 'cpu'},"
+        "LUNA_ENABLED=true,LLM_ENABLED=true,ALLOW_EXTERNAL_API=true,"
+        "LANGSMITH_ENABLED=false,LANGSMITH_TRACING=false,"
+        "EMBEDDING_PROVIDER=openai,EMBEDDING_DIMENSIONS=384,INGEST_ASYNC=false",
+        "--set-secrets=DATABASE_URL=paperlens-database-url:latest,"
+        "LLM_API_KEY=paperlens-openai-api-key:latest,"
+        "LUNA_API_KEY=paperlens-openai-api-key:latest,"
+        "EMBEDDING_API_KEY=paperlens-openai-api-key:latest,"
+        "LLM_MODEL=paperlens-openai-answer-model:latest,"
+        "LUNA_MODEL=paperlens-openai-answer-model:latest,"
+        "EMBEDDING_MODEL=paperlens-openai-embedding-model:latest",
+    ]
+    if gpu:
+        deploy.extend(
+            [
+                "--gpu=1",
+                "--gpu-type=nvidia-l4",
+                "--no-gpu-zonal-redundancy",
+                "--no-cpu-throttling",
+            ]
+        )
+    else:
+        deploy.extend(["--gpu=0", "--cpu-throttling"])
+    return run(deploy)
 
 
 def deploy_ui(api_url: str) -> int:
@@ -142,7 +149,7 @@ timeout: 1800s
             f"--service-account={RUNTIME_SA}",
             "--allow-unauthenticated",
             "--port=8080",
-            "--memory=1Gi",
+            "--memory=256Mi",
             "--cpu=1",
             "--timeout=300",
             f"--set-env-vars=PAPERLENS_API_BASE={api_url},PAPERLENS_API_URL={api_url}",
@@ -154,9 +161,19 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("target", choices=["api", "ui", "both"])
     parser.add_argument("--api-url", default="")
+    parser.add_argument(
+        "--gpu",
+        action="store_true",
+        help="Deploy API with an NVIDIA L4 and CUDA-enabled Docling image",
+    )
+    parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help="Deploy an existing image tag without rebuilding it",
+    )
     args = parser.parse_args()
     if args.target in {"api", "both"}:
-        code = deploy_api()
+        code = deploy_api(gpu=args.gpu, skip_build=args.skip_build)
         if code != 0:
             return code
     if args.target in {"ui", "both"}:

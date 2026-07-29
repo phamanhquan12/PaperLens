@@ -53,6 +53,75 @@ def test_health(client):
     assert response.json() == {"status": "ok"}
 
 
+def test_capabilities_are_secret_free(client):
+    response = client.get("/capabilities")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reader"] is True
+    assert body["visual_enrichment"] is False
+    assert "api_key" not in str(body).lower()
+
+
+def test_unified_agent_greeting_has_no_fake_confidence(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.routes.run_agent",
+        lambda *args, **kwargs: {
+            "conversation_id": "conversation-1",
+            "answer": "Hi! How can I help with your research?",
+            "grounded": False,
+            "citations": [],
+            "tool_calls": [],
+            "artifacts": [],
+        },
+    )
+    response = client.post(
+        "/agent",
+        json={"message": "Hi!", "selected_papers": []},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["grounded"] is False
+    assert "confidence" not in response.json()
+
+
+def test_unified_agent_stream_emits_tokens_and_done(client, monkeypatch):
+    def fake_stream(*args, **kwargs):
+        yield {"type": "start", "conversation_id": "conversation-1"}
+        yield {"type": "token", "content": "**Hello**"}
+        yield {
+            "type": "done",
+            "conversation_id": "conversation-1",
+            "answer": "**Hello**",
+            "grounded": False,
+            "citations": [],
+            "tool_calls": [],
+            "artifacts": [],
+        }
+
+    monkeypatch.setattr("app.routes.stream_agent", fake_stream)
+    response = client.post(
+        "/agent/stream",
+        json={"message": "Hi!", "selected_papers": []},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert '"type": "token"' in response.text
+    assert "**Hello**" in response.text
+
+
+def test_cloud_ui_cors_preflight(client):
+    response = client.options(
+        "/papers",
+        headers={
+            "Origin": "https://paperlens-ui-uopctebpeq-as.a.run.app",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"].startswith("https://paperlens-ui-")
+
+
 def test_invalid_extension(client):
     response = client.post(
         "/papers",
@@ -149,6 +218,42 @@ def test_document_retrieval(client, tmp_path):
     response = client.get("/papers/p2/document")
     assert response.status_code == 200
     assert response.json()["paper_id"] == "p2"
+
+
+def test_private_asset_content_proxy(client, tmp_path):
+    store = LocalStorage(tmp_path)
+    store.save_json(
+        "normalized/papers/p3/meta.json",
+        {
+            "paper_id": "p3",
+            "filename": "x.pdf",
+            "status": "completed",
+            "parse_status": "SUCCESS",
+            "pages": 1,
+            "artifacts": {},
+        },
+    )
+    image_key = "assets/papers/p3/figures/figure_001.png"
+    store.save_bytes(image_key, b"\x89PNG\r\n\x1a\nmock", content_type="image/png")
+    store.save_json(
+        "normalized/papers/p3/assets_manifest.json",
+        {
+            "tables": [],
+            "formulas": [],
+            "figures": [
+                {
+                    "element_id": "figure_001",
+                    "type": "figure",
+                    "page": 1,
+                    "image_uri": image_key,
+                }
+            ],
+        },
+    )
+    response = client.get("/papers/p3/assets/figure/figure_001/content")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content.startswith(b"\x89PNG")
 
 
 def test_valid_pdf_upload_mocked(client, monkeypatch, tmp_path):

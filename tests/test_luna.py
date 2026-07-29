@@ -107,6 +107,36 @@ def test_retry_logic(tmp_path, monkeypatch):
     assert attempts["n"] == 2
 
 
+def test_richer_figure_components_are_normalized(tmp_path, monkeypatch):
+    client = LunaClient(
+        settings=_settings(luna_max_retries=0),
+        storage=LocalStorage(tmp_path),
+    )
+
+    def rich_call(prompt, image_bytes):
+        return {
+            "visual_type": "architecture diagram",
+            "description": "A model pipeline.",
+            "main_message": "Features feed a classifier.",
+            "components": [{"name": "Encoder", "description": "Creates features"}],
+            "relationships": "Encoder feeds classifier",
+            "evidence_from_caption": [],
+            "uncertainties": [],
+            "confidence": 0.9,
+        }, {"total_tokens": 12}
+
+    monkeypatch.setattr(client, "_call_provider", rich_call)
+    result = client.enrich_element(
+        paper_id="p1",
+        element=VisualElement(element_id="figure_001", type="figure"),
+        image_bytes=b"img",
+    )
+
+    assert result.status == "completed"
+    assert result.result["components"] == ["name: Encoder; description: Creates features"]
+    assert result.result["relationships"] == ["Encoder feeds classifier"]
+
+
 def test_no_call_when_disabled(monkeypatch):
     client = LunaClient(settings=_settings(allow_external_api=False, luna_enabled=True))
     called = {"n": 0}

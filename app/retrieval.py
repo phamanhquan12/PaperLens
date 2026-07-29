@@ -1,176 +1,118 @@
-"""Hybrid retrieval: sparse + dense + RRF (+ optional rerank/MMR)."""
+"""Hybrid retrieval composed from LangChain BM25, vector, and ensemble retrievers."""
 
 from __future__ import annotations
 
 import logging
-import math
-import re
-from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+from langchain_core.documents import Document
 from sqlalchemy import select
 
 from app.config import Settings, get_settings
 from app.db.models import PaperChunk
 from app.db.session import session_scope
-from app.embeddings import cosine_similarity, get_embedding_provider
+from app.embeddings import get_embeddings, get_vector_store
 
 logger = logging.getLogger(__name__)
-
-_WORD_RE = re.compile(r"[A-Za-z0-9_]+")
-
-
-@dataclass
-class RetrievedChunk:
-    chunk_id: str
-    paper_id: str
-    content: str
-    chunk_type: str
-    section_path: list[str]
-    page_start: int | None
-    page_end: int | None
-    score: float
-    metadata: dict[str, Any] = field(default_factory=dict)
-    parent_chunk_id: str | None = None
-    sources: list[str] = field(default_factory=list)
 
 
 def normalize_query(query: str) -> str:
     return " ".join(query.strip().split())
 
 
-def _tokenize(text: str) -> list[str]:
-    return [t.lower() for t in _WORD_RE.findall(text)]
+def _row_document(row: PaperChunk) -> Document:
+    metadata = {
+        "chunk_id": row.id,
+        "paper_id": row.paper_id,
+        "parent_chunk_id": row.parent_chunk_id,
+        "chunk_type": row.chunk_type,
+        "section_path": list(row.section_path or []),
+        "page_start": row.page_start,
+        "page_end": row.page_end,
+        **dict(row.chunk_metadata or {}),
+    }
+    metadata["citation"] = _citation_label(metadata)
+    return Document(page_content=row.content, metadata=metadata)
 
 
-def sparse_score(query: str, content: str) -> float:
-    """Simple BM25-ish TF score for portable SQLite/Postgres without extension deps."""
-    q_tokens = _tokenize(query)
-    if not q_tokens:
-        return 0.0
-    doc_tokens = _tokenize(content)
-    if not doc_tokens:
-        return 0.0
-    tf: dict[str, int] = {}
-    for tok in doc_tokens:
-        tf[tok] = tf.get(tok, 0) + 1
-    score = 0.0
-    avgdl = 200.0
-    dl = len(doc_tokens)
-    k1 = 1.2
-    b = 0.75
-    for qt in set(q_tokens):
-        freq = tf.get(qt, 0)
-        if not freq:
-            continue
-        # No corpus IDF available — use smoothed presence boost
-        idf = 1.5
-        score += idf * (freq * (k1 + 1)) / (freq + k1 * (1 - b + b * dl / avgdl))
-    # Phrase bonus
-    if query.lower() in content.lower():
-        score += 2.0
-    return score
-
-
-def reciprocal_rank_fusion(
-    rankings: list[list[RetrievedChunk]],
+def _build_retriever(
+    documents: list[Document],
     *,
-    k: int = 60,
-) -> list[RetrievedChunk]:
-    scores: dict[str, float] = {}
-    best: dict[str, RetrievedChunk] = {}
-    for ranking in rankings:
-        for rank, item in enumerate(ranking, start=1):
-            scores[item.chunk_id] = scores.get(item.chunk_id, 0.0) + 1.0 / (k + rank)
-            existing = best.get(item.chunk_id)
-            if existing is None:
-                best[item.chunk_id] = item
-            else:
-                for src in item.sources:
-                    if src not in existing.sources:
-                        existing.sources.append(src)
-    fused = []
-    for chunk_id, score in sorted(scores.items(), key=lambda kv: kv[1], reverse=True):
-        item = best[chunk_id]
-        fused.append(
-            RetrievedChunk(
-                chunk_id=item.chunk_id,
-                paper_id=item.paper_id,
-                content=item.content,
-                chunk_type=item.chunk_type,
-                section_path=list(item.section_path or []),
-                page_start=item.page_start,
-                page_end=item.page_end,
-                score=score,
-                metadata=dict(item.metadata or {}),
-                parent_chunk_id=item.parent_chunk_id,
-                sources=list(item.sources),
+    settings: Settings,
+    paper_id: str | None,
+    candidate_pool: int,
+    use_mmr: bool,
+):
+    from langchain_community.retrievers import BM25Retriever
+
+    sparse = BM25Retriever.from_documents(documents)
+    sparse.k = min(candidate_pool, len(documents))
+    retrievers: list[Any] = [sparse]
+    weights = [1.0]
+    source = "langchain_bm25"
+
+    try:
+        embeddings, _model_name = get_embeddings(settings)
+        vector_store = get_vector_store(settings, embeddings=embeddings)
+        if vector_store is None:
+            from langchain_core.vectorstores import InMemoryVectorStore
+
+            vector_store = InMemoryVectorStore.from_documents(
+                documents,
+                embedding=embeddings,
             )
+        search_kwargs: dict[str, Any] = {"k": min(candidate_pool, len(documents))}
+        if paper_id and settings.database_info.dialect.startswith("postgres"):
+            search_kwargs["filter"] = {"paper_id": {"$eq": paper_id}}
+        dense = vector_store.as_retriever(
+            search_type="mmr" if use_mmr else "similarity",
+            search_kwargs=search_kwargs,
         )
-    return fused
+        retrievers.append(dense)
+        weights = [0.45, 0.55]
+        source = "langchain_bm25_pgvector_ensemble"
+    except Exception as exc:
+        logger.warning("LangChain vector retriever unavailable; using BM25: %s", type(exc).__name__)
+
+    if len(retrievers) == 1:
+        return sparse, source
+
+    from langchain_classic.retrievers import EnsembleRetriever
+
+    return (
+        EnsembleRetriever(
+            retrievers=retrievers,
+            weights=weights,
+            id_key="chunk_id",
+        ),
+        source,
+    )
 
 
-def _lexical_rerank(query: str, items: list[RetrievedChunk]) -> list[RetrievedChunk]:
-    """Fallback reranker when cross-encoder is unavailable."""
-    scored = []
-    for item in items:
-        s = sparse_score(query, item.content) + item.score
-        scored.append((s, item))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    out = []
-    for s, item in scored:
-        out.append(
-            RetrievedChunk(
-                chunk_id=item.chunk_id,
-                paper_id=item.paper_id,
-                content=item.content,
-                chunk_type=item.chunk_type,
-                section_path=item.section_path,
-                page_start=item.page_start,
-                page_end=item.page_end,
-                score=float(s),
-                metadata=item.metadata,
-                parent_chunk_id=item.parent_chunk_id,
-                sources=list(dict.fromkeys([*item.sources, "rerank"])),
-            )
-        )
-    return out
-
-
-def mmr_select(
-    items: list[RetrievedChunk],
+def get_langchain_retriever(
     *,
-    top_k: int,
-    lambda_mult: float = 0.7,
-) -> list[RetrievedChunk]:
-    if not items:
-        return []
-    selected: list[RetrievedChunk] = []
-    candidates = list(items)
-    while candidates and len(selected) < top_k:
-        if not selected:
-            selected.append(candidates.pop(0))
-            continue
-        best_idx = 0
-        best_score = -1e9
-        for i, cand in enumerate(candidates):
-            relevance = cand.score
-            redundancy = 0.0
-            for sel in selected:
-                # cheap token Jaccard redundancy
-                a = set(_tokenize(cand.content))
-                b = set(_tokenize(sel.content))
-                if not a or not b:
-                    sim = 0.0
-                else:
-                    sim = len(a & b) / len(a | b)
-                redundancy = max(redundancy, sim)
-            score = lambda_mult * relevance - (1 - lambda_mult) * redundancy
-            if score > best_score:
-                best_score = score
-                best_idx = i
-        selected.append(candidates.pop(best_idx))
-    return selected
+    paper_id: str | None,
+    settings: Settings | None = None,
+    candidate_pool: int = 40,
+    use_mmr: bool = False,
+):
+    """Build the native LangChain retriever consumed by QA chains and LangGraph tools."""
+    cfg = settings or get_settings()
+    with session_scope(cfg) as session:
+        stmt = select(PaperChunk)
+        if paper_id:
+            stmt = stmt.where(PaperChunk.paper_id == paper_id)
+        documents = [_row_document(row) for row in session.scalars(stmt)]
+    if not documents:
+        return None, "none", 0
+    retriever, source = _build_retriever(
+        documents,
+        settings=cfg,
+        paper_id=paper_id,
+        candidate_pool=candidate_pool,
+        use_mmr=use_mmr,
+    )
+    return retriever, source, len(documents)
 
 
 def retrieve(
@@ -193,119 +135,82 @@ def retrieve(
         if paper_id:
             stmt = stmt.where(PaperChunk.paper_id == paper_id)
         rows = list(session.scalars(stmt))
-
-        sparse_ranked: list[RetrievedChunk] = []
-        for row in rows:
-            score = sparse_score(q, row.content)
-            if score <= 0:
-                continue
-            sparse_ranked.append(
-                RetrievedChunk(
-                    chunk_id=row.id,
-                    paper_id=row.paper_id,
-                    content=row.content,
-                    chunk_type=row.chunk_type,
-                    section_path=list(row.section_path or []),
-                    page_start=row.page_start,
-                    page_end=row.page_end,
-                    score=score,
-                    metadata=dict(row.chunk_metadata or {}),
-                    parent_chunk_id=row.parent_chunk_id,
-                    sources=["sparse"],
-                )
-            )
-        sparse_ranked.sort(key=lambda x: x.score, reverse=True)
-        sparse_ranked = sparse_ranked[:candidate_pool]
-
-        dense_ranked: list[RetrievedChunk] = []
-        try:
-            provider = get_embedding_provider(cfg)
-            qvec = provider.embed_query(q)
-            for row in rows:
-                if not row.embedding or row.embedding_model != provider.name:
-                    continue
-                if len(row.embedding) != len(qvec):
-                    continue
-                score = cosine_similarity(qvec, row.embedding)
-                dense_ranked.append(
-                    RetrievedChunk(
-                        chunk_id=row.id,
-                        paper_id=row.paper_id,
-                        content=row.content,
-                        chunk_type=row.chunk_type,
-                        section_path=list(row.section_path or []),
-                        page_start=row.page_start,
-                        page_end=row.page_end,
-                        score=score,
-                        metadata=dict(row.chunk_metadata or {}),
-                        parent_chunk_id=row.parent_chunk_id,
-                        sources=["dense"],
-                    )
-                )
-            dense_ranked.sort(key=lambda x: x.score, reverse=True)
-            dense_ranked = dense_ranked[:candidate_pool]
-        except Exception as exc:
-            logger.warning("Dense retrieval unavailable: %s", exc)
-
-        fused = reciprocal_rank_fusion([sparse_ranked, dense_ranked] if dense_ranked else [sparse_ranked])
-        reranked = _lexical_rerank(q, fused[:candidate_pool])
-
-        if use_mmr:
-            selected = mmr_select(reranked, top_k=top_k)
-        else:
-            selected = reranked[:top_k]
-
-        # Parent expansion: if child selected, include parent content in metadata
-        if expand_parents:
-            by_id = {row.id: row for row in rows}
-            for item in selected:
-                if item.parent_chunk_id and item.parent_chunk_id in by_id:
-                    parent = by_id[item.parent_chunk_id]
-                    item.metadata["parent_content_preview"] = parent.content[:500]
-                    item.metadata["parent_pages"] = [parent.page_start, parent.page_end]
-                    if "parent_expansion" not in item.sources:
-                        item.sources.append("parent_expansion")
-
-        results = [
-            {
-                "chunk_id": r.chunk_id,
-                "paper_id": r.paper_id,
-                "content": r.content,
-                "chunk_type": r.chunk_type,
-                "section_path": r.section_path,
-                "page_start": r.page_start,
-                "page_end": r.page_end,
-                "score": r.score,
-                "metadata": r.metadata,
-                "parent_chunk_id": r.parent_chunk_id,
-                "sources": r.sources,
-                "citation": _citation_label(r),
+        documents = [_row_document(row) for row in rows]
+        parent_snapshots = {
+            row.id: {
+                "content": row.content,
+                "page_start": row.page_start,
+                "page_end": row.page_end,
             }
-            for r in selected
-        ]
+            for row in rows
+        }
 
+    if not rows:
         return {
             "query": q,
-            "results": results,
+            "results": [],
             "diagnostics": {
-                "sparse_candidates": len(sparse_ranked),
-                "dense_candidates": len(dense_ranked),
-                "fused_candidates": len(fused),
-                "returned": len(results),
-                "mmr": use_mmr,
+                "returned": 0,
                 "paper_id": paper_id,
+                "retriever": "none",
             },
         }
 
+    retriever, source = _build_retriever(
+        documents,
+        settings=cfg,
+        paper_id=paper_id,
+        candidate_pool=candidate_pool,
+        use_mmr=use_mmr,
+    )
+    selected = list(retriever.invoke(q))[:top_k]
+    results: list[dict[str, Any]] = []
+    for rank, document in enumerate(selected, start=1):
+        metadata = dict(document.metadata)
+        parent_id = metadata.get("parent_chunk_id")
+        if expand_parents and parent_id in parent_snapshots:
+            parent = parent_snapshots[parent_id]
+            metadata["parent_content_preview"] = str(parent["content"])[:500]
+            metadata["parent_pages"] = [parent["page_start"], parent["page_end"]]
+        result = {
+            "chunk_id": str(metadata.get("chunk_id") or ""),
+            "paper_id": str(metadata.get("paper_id") or ""),
+            "content": document.page_content,
+            "chunk_type": str(metadata.get("chunk_type") or "text"),
+            "section_path": list(metadata.get("section_path") or []),
+            "page_start": metadata.get("page_start"),
+            "page_end": metadata.get("page_end"),
+            "score": 1.0 / rank,
+            "metadata": metadata,
+            "parent_chunk_id": parent_id,
+            "sources": [source],
+        }
+        result["citation"] = _citation_label(result)
+        results.append(result)
 
-def _citation_label(item: RetrievedChunk) -> str:
-    page = item.page_start or item.page_end
-    section = " > ".join(item.section_path) if item.section_path else None
-    if item.chunk_type == "table":
+    return {
+        "query": q,
+        "results": results,
+        "diagnostics": {
+            "corpus_size": len(documents),
+            "returned": len(results),
+            "mmr": use_mmr,
+            "paper_id": paper_id,
+            "retriever": source,
+        },
+    }
+
+
+def _citation_label(item: dict[str, Any]) -> str:
+    page = item.get("page_start") or item.get("page_end")
+    section_path = item.get("section_path") or []
+    section = " > ".join(section_path) if section_path else None
+    chunk_type = item.get("chunk_type")
+    if chunk_type == "table":
         return f"[Table, Page {page}]" if page else "[Table]"
-    if item.chunk_type == "figure":
+    if chunk_type == "figure":
         return f"[Figure, Page {page}]" if page else "[Figure]"
-    if item.chunk_type == "equation":
+    if chunk_type == "equation":
         return f"[Equation, Page {page}]" if page else "[Equation]"
     if page and section:
         return f"[Page {page}, Section {section}]"
@@ -313,7 +218,8 @@ def _citation_label(item: RetrievedChunk) -> str:
         return f"[Page {page}]"
     if section:
         return f"[Section {section}]"
-    return f"[Chunk {item.chunk_id[:8]}]"
+    chunk_id = str(item.get("chunk_id") or "")
+    return f"[Chunk {chunk_id[:8]}]"
 
 
 def evaluate_retrieval(
@@ -322,38 +228,47 @@ def evaluate_retrieval(
     settings: Settings | None = None,
     k_values: Sequence[int] = (5, 10),
 ) -> dict[str, Any]:
-    """Compute Recall@k / MRR over cases with expected chunk_ids or content substrings."""
+    """Compute Recall@k and MRR over expected chunk IDs or content substrings."""
     recalls: dict[int, list[float]] = {k: [] for k in k_values}
-    rr: list[float] = []
+    reciprocal_ranks: list[float] = []
     details = []
     for case in cases:
-        query = case["query"]
-        paper_id = case.get("paper_id")
+        output = retrieve(
+            case["query"],
+            paper_id=case.get("paper_id"),
+            settings=settings,
+            top_k=max(k_values),
+        )
         expected_ids = set(case.get("expected_chunk_ids") or [])
-        expected_substrings = [s.lower() for s in case.get("expected_substrings") or []]
-        out = retrieve(query, paper_id=paper_id, settings=settings, top_k=max(k_values))
-        results = out["results"]
+        expected_substrings = [
+            value.lower() for value in case.get("expected_substrings") or []
+        ]
         hit_rank = None
-        for rank, item in enumerate(results, start=1):
-            matched = False
-            if item["chunk_id"] in expected_ids:
-                matched = True
-            if any(sub in item["content"].lower() for sub in expected_substrings):
-                matched = True
-            if matched:
+        for rank, item in enumerate(output["results"], start=1):
+            if item["chunk_id"] in expected_ids or any(
+                value in item["content"].lower() for value in expected_substrings
+            ):
                 hit_rank = rank
                 break
-        rr.append(0.0 if hit_rank is None else 1.0 / hit_rank)
+        reciprocal_ranks.append(0.0 if hit_rank is None else 1.0 / hit_rank)
         for k in k_values:
             recalls[k].append(1.0 if hit_rank is not None and hit_rank <= k else 0.0)
-        details.append({"query": query, "hit_rank": hit_rank, "diagnostics": out["diagnostics"]})
+        details.append(
+            {
+                "query": case["query"],
+                "hit_rank": hit_rank,
+                "diagnostics": output["diagnostics"],
+            }
+        )
 
-    def avg(xs: list[float]) -> float:
-        return round(sum(xs) / len(xs), 4) if xs else 0.0
+    def average(values: list[float]) -> float:
+        return round(sum(values) / len(values), 4) if values else 0.0
 
-    metrics = {
-        "n_cases": len(cases),
-        "MRR": avg(rr),
-        **{f"Recall@{k}": avg(recalls[k]) for k in k_values},
+    return {
+        "metrics": {
+            "n_cases": len(cases),
+            "MRR": average(reciprocal_ranks),
+            **{f"Recall@{k}": average(values) for k, values in recalls.items()},
+        },
+        "details": details,
     }
-    return {"metrics": metrics, "details": details}

@@ -8,6 +8,8 @@ import tempfile
 import uuid
 from pathlib import Path
 
+from sqlalchemy import select
+
 from app.assets import extract_assets
 from app.chunking import chunk_paper_document, persist_chunks
 from app.cleaner import audit_to_csv, build_audit_and_clean
@@ -86,10 +88,14 @@ def _persist_failure(
                 warnings=warnings,
                 page_count=page_count,
             )
-            if job_id:
-                job = session.get(Job, job_id)
-                if job is not None:
-                    repo.update_job(job, status="failed", progress=1.0, error=error)
+            job = session.get(Job, job_id) if job_id else session.scalar(
+                select(Job)
+                .where(Job.paper_id == paper_id, Job.status.in_(["queued", "running"]))
+                .order_by(Job.created_at.desc())
+                .limit(1)
+            )
+            if job is not None:
+                repo.update_job(job, status="failed", progress=1.0, error=error)
     except Exception as exc:
         logger.warning("Failed to persist incomplete ingest to DB: %s", exc)
 
@@ -126,7 +132,7 @@ def _persist_success(
         logger.warning("Failed to persist completed ingest to DB: %s", exc)
 
 
-def ingest_pdf_bytes(
+def _ingest_pdf_bytes_impl(
     data: bytes,
     *,
     filename: str,
@@ -358,3 +364,62 @@ def ingest_pdf_bytes(
             artifacts=artifacts,
             warnings=paper_doc.warnings,
         )
+
+
+def ingest_pdf_bytes(
+    data: bytes,
+    *,
+    filename: str,
+    settings: Settings | None = None,
+    storage: StorageBackend | None = None,
+    paper_id: str | None = None,
+) -> IngestionResponse:
+    """Run ingestion and persist an explicit failure state on unexpected errors."""
+    cfg = settings or get_settings()
+    store = storage or get_storage(cfg)
+    pid = paper_id or str(uuid.uuid4())
+    try:
+        return _ingest_pdf_bytes_impl(
+            data,
+            filename=filename,
+            settings=cfg,
+            storage=store,
+            paper_id=pid,
+        )
+    except IngestionError:
+        raise
+    except Exception as exc:
+        safe_name = sanitize_filename(filename) if filename else "upload.pdf"
+        raw_key = paper_raw_pdf_key(pid)
+        artifacts = ArtifactPaths()
+        try:
+            if store.exists(raw_key):
+                artifacts.raw_pdf = raw_key
+            store.save_json(
+                paper_meta_key(pid),
+                {
+                    "paper_id": pid,
+                    "filename": safe_name,
+                    "status": "failed",
+                    "parse_status": "error",
+                    "artifacts": artifacts.model_dump(),
+                    "warnings": [],
+                    "error": f"{type(exc).__name__}: processing failed",
+                },
+            )
+        except Exception as storage_exc:
+            logger.warning("Could not persist failed ingest metadata: %s", type(storage_exc).__name__)
+        _persist_failure(
+            cfg,
+            paper_id=pid,
+            filename=safe_name,
+            storage_uri=raw_key,
+            status="failed",
+            parse_status="error",
+            error=f"{type(exc).__name__}: processing failed",
+            artifacts=artifacts,
+            warnings=[],
+            page_count=0,
+            job_id=None,
+        )
+        raise

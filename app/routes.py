@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Response, UploadFile
+from fastapi.responses import StreamingResponse
 
 from app.config import Settings, get_settings
 from app.db.repository import PaperRepository
@@ -14,6 +16,10 @@ from app.db.session import session_scope
 from app.luna import LunaClient, LunaDisabledError
 from app.pipeline import IngestionError, ingest_pdf_bytes
 from app.schemas import (
+    AgentConversationResponse,
+    AgentConversationTurn,
+    AgentRequest,
+    AgentResponse,
     ArtifactPaths,
     AssetManifest,
     CompareRequest,
@@ -34,9 +40,12 @@ from app.schemas import (
     RetrieveRequest,
     VisualElement,
 )
+from app.agent import get_agent_conversation, run_agent, stream_agent
 from app.compare import compare_papers
+from app.accelerator import accelerator_status
 from app.discovery import DiscoveryError, discover_papers, find_library_duplicates
 from app.embeddings import index_paper_chunks
+from app.guardrails import GuardrailError, validate_agent_input
 from app.qa import answer_paper_question
 from app.research_graph import run_research
 from app.retrieval import retrieve
@@ -60,6 +69,31 @@ def storage_dep(settings: Settings = Depends(get_settings)) -> StorageBackend:
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok")
+
+
+@router.get("/capabilities")
+def capabilities(settings: Settings = Depends(get_settings)) -> dict[str, Any]:
+    """Expose non-secret feature flags for clients."""
+    return {
+        "ingestion": True,
+        "reader": True,
+        "retrieval": True,
+        "qa_mode": (
+            "langchain_openai_grounded"
+            if settings.llm_enabled and settings.allow_external_api
+            else "extractive"
+        ),
+        "discovery": True,
+        "comparison": True,
+        "research_workflow": True,
+        "research_orchestrator": "langgraph",
+        "unified_research_agent": True,
+        "visual_enrichment": settings.luna_enabled and settings.allow_external_api,
+        "embedding_provider": settings.embedding_provider,
+        "docling_accelerator": accelerator_status(
+            settings.docling_accelerator_device
+        ),
+    }
 
 
 @router.get("/papers", response_model=PaperLibraryResponse)
@@ -314,6 +348,34 @@ def get_assets(
     return AssetManifest(tables=doc.tables, figures=doc.figures, formulas=doc.formulas)
 
 
+@router.get("/papers/{paper_id}/assets/{asset_type}/{element_id}/content")
+def get_asset_content(
+    paper_id: str,
+    asset_type: str,
+    element_id: str,
+    storage: StorageBackend = Depends(storage_dep),
+) -> Response:
+    """Return a private visual asset through the API for browser display."""
+    manifest = get_assets(paper_id, storage)
+    buckets = {
+        "table": manifest.tables,
+        "figure": manifest.figures,
+        "formula": manifest.formulas,
+    }
+    if asset_type not in buckets:
+        raise HTTPException(status_code=400, detail="asset_type must be table, figure, or formula")
+    element = next((item for item in buckets[asset_type] if item.element_id == element_id), None)
+    if element is None:
+        raise HTTPException(status_code=404, detail=f"Unknown {asset_type} element: {element_id}")
+    if not element.image_uri or not storage.exists(element.image_uri):
+        raise HTTPException(status_code=404, detail="Image asset is unavailable")
+    return Response(
+        content=storage.read_bytes(element.image_uri),
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=300"},
+    )
+
+
 @router.post("/papers/{paper_id}/index")
 def index_paper(
     paper_id: str,
@@ -365,7 +427,7 @@ def list_chunks(
                     "page_start": r.page_start,
                     "page_end": r.page_end,
                     "token_count": r.token_count,
-                    "has_embedding": r.embedding is not None,
+                    "has_embedding": bool(r.embedding_model),
                     "content_preview": (r.content or "")[:240],
                 }
                 for r in rows
@@ -462,6 +524,106 @@ def research_endpoint(
         max_external_searches=body.max_external_searches,
     )
     return report.model_dump(mode="json")
+
+
+@router.post("/agent", response_model=AgentResponse)
+def agent_endpoint(
+    body: AgentRequest,
+    settings: Settings = Depends(get_settings),
+) -> AgentResponse:
+    try:
+        validated = validate_agent_input(
+            body.message,
+            selected_papers=body.selected_papers,
+            image_data_url=body.image,
+            settings=settings,
+        )
+        return AgentResponse.model_validate(
+            run_agent(
+                validated.message,
+                selected_papers=validated.selected_papers,
+                conversation_id=body.conversation_id,
+                settings=settings,
+                image=validated.image,
+            )
+        )
+    except GuardrailError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": exc.code, "message": exc.safe_message},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/agent/stream")
+def agent_stream_endpoint(
+    body: AgentRequest,
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    try:
+        validated = validate_agent_input(
+            body.message,
+            selected_papers=body.selected_papers,
+            image_data_url=body.image,
+            settings=settings,
+        )
+    except GuardrailError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": exc.code, "message": exc.safe_message},
+        ) from exc
+
+    def events():
+        try:
+            for event in stream_agent(
+                validated.message,
+                selected_papers=validated.selected_papers,
+                conversation_id=body.conversation_id,
+                settings=settings,
+                image=validated.image,
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except GuardrailError as exc:
+            error = {
+                "type": "error",
+                "error": exc.code,
+                "message": exc.safe_message,
+            }
+            yield f"data: {json.dumps(error)}\n\n"
+        except Exception as exc:
+            logger.exception("Research agent stream failed")
+            error = {"type": "error", "message": f"{type(exc).__name__}: request failed"}
+            yield f"data: {json.dumps(error)}\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get(
+    "/agent/conversations/{conversation_id}",
+    response_model=AgentConversationResponse,
+)
+def get_agent_conversation_endpoint(
+    conversation_id: str,
+    settings: Settings = Depends(get_settings),
+) -> AgentConversationResponse:
+    payload = get_agent_conversation(conversation_id, settings=settings)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return AgentConversationResponse(
+        conversation_id=payload["conversation_id"],
+        selected_papers=list(payload.get("selected_papers") or []),
+        turns=[
+            AgentConversationTurn.model_validate(turn) for turn in payload.get("turns") or []
+        ],
+    )
 
 
 @router.post("/papers/{paper_id}/enrich", response_model=EnrichResponse)

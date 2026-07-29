@@ -42,6 +42,38 @@ SCHEMA_BY_KIND: dict[ElementKind, type[BaseModel]] = {
 }
 
 
+LIST_FIELDS_BY_KIND: dict[ElementKind, set[str]] = {
+    "formula": {"assumptions_or_conditions", "uncertainties"},
+    "figure": {"components", "relationships", "evidence_from_caption", "uncertainties"},
+    "table": {
+        "columns",
+        "main_results",
+        "comparisons",
+        "best_results",
+        "limitations",
+        "uncertainties",
+    },
+}
+
+
+def _normalize_schema_payload(kind: ElementKind, payload: dict[str, Any]) -> dict[str, Any]:
+    """Coerce richer provider JSON into the stable public enrichment schema."""
+    normalized = dict(payload)
+    for field in LIST_FIELDS_BY_KIND[kind]:
+        value = normalized.get(field)
+        if value is None:
+            normalized[field] = []
+            continue
+        values = value if isinstance(value, list) else [value]
+        normalized[field] = [
+            "; ".join(f"{key}: {item}" for key, item in entry.items())
+            if isinstance(entry, dict)
+            else str(entry)
+            for entry in values
+        ]
+    return normalized
+
+
 def _cache_key(
     *,
     asset_bytes: bytes,
@@ -155,7 +187,7 @@ class LunaClient:
         for attempt in range(self.settings.luna_max_retries + 1):
             try:
                 raw, usage = self._call_provider(prompt=prompt, image_bytes=image_bytes)
-                parsed = schema.model_validate(raw)
+                parsed = schema.model_validate(_normalize_schema_payload(kind, raw))
                 enrichment = VisualEnrichment(
                     provider=self.settings.luna_provider,
                     model=self.settings.luna_model,
@@ -215,7 +247,6 @@ class LunaClient:
         b64 = base64.b64encode(image_bytes).decode("ascii")
         response = client.chat.completions.create(
             model=self.settings.luna_model,
-            temperature=0,
             timeout=self.settings.luna_timeout_seconds,
             response_format={"type": "json_object"},
             messages=[

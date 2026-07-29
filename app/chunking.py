@@ -7,6 +7,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 from app.db.models import PaperChunk
 from app.db.repository import PaperRepository
 from app.db.session import session_scope
@@ -54,24 +57,6 @@ class ChunkingConfig:
     overlap_tokens: int = 55
 
 
-def _split_with_overlap(text: str, *, max_tokens: int, overlap: int) -> list[str]:
-    tokens = _TOKEN_RE.findall(text)
-    if not tokens:
-        return []
-    if len(tokens) <= max_tokens:
-        return [" ".join(tokens)]
-    parts: list[str] = []
-    start = 0
-    step = max(1, max_tokens - overlap)
-    while start < len(tokens):
-        end = min(len(tokens), start + max_tokens)
-        parts.append(" ".join(tokens[start:end]))
-        if end >= len(tokens):
-            break
-        start += step
-    return parts
-
-
 def _group_text_by_section(elements: Iterable[TextElement]) -> list[tuple[tuple[str, ...], list[TextElement]]]:
     groups: list[tuple[tuple[str, ...], list[TextElement]]] = []
     current_path: tuple[str, ...] | None = None
@@ -105,80 +90,88 @@ def chunk_paper_document(
     *,
     config: ChunkingConfig | None = None,
 ) -> ChunkingResult:
-    """Build parent/child chunks plus specialized visual retrieval records."""
+    """Build LangChain-split parent/child documents plus visual retrieval records."""
     cfg = config or ChunkingConfig()
     parents: list[ChunkDraft] = []
     children: list[ChunkDraft] = []
 
     section_groups = _group_text_by_section(paper.text_elements)
-    parent_idx = 0
-
+    source_documents: list[Document] = []
     for path, elems in section_groups:
-        # Build parent passages by packing elements up to parent_max_tokens
-        buffer: list[TextElement] = []
-        buffer_tokens = 0
-
-        def flush_parent() -> None:
-            nonlocal parent_idx, buffer, buffer_tokens
-            if not buffer:
-                return
-            parent_idx += 1
-            parent_key = f"parent_{parent_idx:04d}"
-            text = "\n\n".join(el.text for el in buffer if el.text)
-            page_start, page_end = _pages_of(buffer)
-            element_ids = [el.element_id for el in buffer]
-            parent = ChunkDraft(
-                content=text,
-                chunk_type="parent_passage",
-                section_path=list(path),
-                page_start=page_start,
-                page_end=page_end,
-                token_count=estimate_tokens(text),
-                parent_key=None,
-                element_ids=element_ids,
-                metadata={"parent_key": parent_key},
+        text = "\n\n".join(el.text for el in elems if el.text).strip()
+        if not text:
+            continue
+        page_start, page_end = _pages_of(elems)
+        source_documents.append(
+            Document(
+                page_content=text,
+                metadata={
+                    "paper_id": paper.paper_id,
+                    "section_path": list(path),
+                    "page_start": page_start,
+                    "page_end": page_end,
+                    "element_ids": [el.element_id for el in elems],
+                },
             )
-            parents.append(parent)
+        )
 
-            # Child splits
-            for part in _split_with_overlap(
-                text, max_tokens=cfg.child_max_tokens, overlap=cfg.overlap_tokens
-            ):
-                # Skip tiny trailing fragments unless alone
-                tok = estimate_tokens(part)
-                if tok < cfg.child_min_tokens and len(parents) > 0 and children:
-                    # attach tiny remainder by extending last child when same parent
-                    if children and children[-1].metadata.get("parent_key") == parent_key:
-                        children[-1].content = (children[-1].content + " " + part).strip()
-                        children[-1].token_count = estimate_tokens(children[-1].content)
-                        continue
-                children.append(
-                    ChunkDraft(
-                        content=part,
-                        chunk_type="text",
-                        section_path=list(path),
-                        page_start=page_start,
-                        page_end=page_end,
-                        token_count=estimate_tokens(part),
-                        parent_key=parent_key,
-                        element_ids=element_ids,
-                        metadata={"parent_key": parent_key},
-                    )
+    parent_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+        chunk_size=cfg.parent_max_tokens,
+        chunk_overlap=0,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
+    child_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+        chunk_size=cfg.child_max_tokens,
+        chunk_overlap=cfg.overlap_tokens,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
+
+    parent_documents = parent_splitter.split_documents(source_documents)
+    for parent_idx, parent_doc in enumerate(parent_documents, start=1):
+        parent_key = f"parent_{parent_idx:04d}"
+        metadata = dict(parent_doc.metadata)
+        parent = ChunkDraft(
+            content=parent_doc.page_content,
+            chunk_type="parent_passage",
+            section_path=list(metadata.get("section_path") or []),
+            page_start=metadata.get("page_start"),
+            page_end=metadata.get("page_end"),
+            token_count=estimate_tokens(parent_doc.page_content),
+            element_ids=list(metadata.get("element_ids") or []),
+            metadata={
+                **metadata,
+                "parent_key": parent_key,
+                "splitter": "langchain_recursive_tiktoken",
+            },
+        )
+        parents.append(parent)
+
+        child_documents = child_splitter.split_documents(
+            [
+                Document(
+                    page_content=parent_doc.page_content,
+                    metadata={**metadata, "parent_key": parent_key},
                 )
-            buffer = []
-            buffer_tokens = 0
-
-        for el in elems:
-            el_tokens = estimate_tokens(el.text)
-            if buffer and buffer_tokens + el_tokens > cfg.parent_max_tokens:
-                flush_parent()
-            buffer.append(el)
-            buffer_tokens += el_tokens
-            if buffer_tokens >= cfg.parent_min_tokens and buffer_tokens >= cfg.parent_max_tokens * 0.85:
-                # Prefer flush near max once min satisfied
-                if buffer_tokens >= cfg.parent_max_tokens:
-                    flush_parent()
-        flush_parent()
+            ]
+        )
+        for child_doc in child_documents:
+            child_meta = dict(child_doc.metadata)
+            children.append(
+                ChunkDraft(
+                    content=child_doc.page_content,
+                    chunk_type="text",
+                    section_path=list(child_meta.get("section_path") or []),
+                    page_start=child_meta.get("page_start"),
+                    page_end=child_meta.get("page_end"),
+                    token_count=estimate_tokens(child_doc.page_content),
+                    parent_key=parent_key,
+                    element_ids=list(child_meta.get("element_ids") or []),
+                    metadata={
+                        **child_meta,
+                        "splitter": "langchain_recursive_tiktoken",
+                    },
+                )
+            )
 
     def add_visual(visual: VisualElement, chunk_type: str) -> None:
         parts = [
@@ -240,6 +233,7 @@ def chunk_paper_document(
         "orphaned_ids_sample": orphaned[:10],
         "visual_chunks": sum(1 for c in children if c.chunk_type in {"table", "figure", "equation"}),
         "section_groups": len(section_groups),
+        "splitter": "langchain_recursive_tiktoken",
     }
     return ChunkingResult(parent_chunks=parents, child_chunks=children, metrics=metrics)
 

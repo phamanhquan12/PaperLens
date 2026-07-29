@@ -239,7 +239,11 @@ class DoclingParser:
         # Import Docling after thread env vars are set.
         from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
         from docling.datamodel.base_models import InputFormat
-        from docling.datamodel.pipeline_options import PdfPipelineOptions
+        from docling.datamodel.pipeline_options import (
+            AcceleratorDevice,
+            AcceleratorOptions,
+            PdfPipelineOptions,
+        )
         from docling.document_converter import DocumentConverter, PdfFormatOption
 
         ocr_enabled = resolve_ocr_enabled(self.settings.docling_ocr_mode, pdf_path)
@@ -252,6 +256,11 @@ class DoclingParser:
         options.generate_picture_images = True
         options.generate_table_images = True
         options.images_scale = self.settings.docling_images_scale
+        options.accelerator_options = AcceleratorOptions(
+            num_threads=self.settings.docling_threads,
+            device=AcceleratorDevice(self.settings.docling_accelerator_device),
+            cuda_use_flash_attention2=self.settings.docling_cuda_use_flash_attention2,
+        )
         # Formula enrichment models can be heavy; keep optional and off by default.
         options.do_formula_enrichment = self.settings.docling_do_formula_enrichment
         options.do_code_enrichment = self.settings.docling_do_code_enrichment

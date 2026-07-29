@@ -1,20 +1,14 @@
 # syntax=docker/dockerfile:1
-FROM python:3.11-slim
+FROM nginx:1.27-alpine
 
-WORKDIR /app
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PORT=8080 \
-    PAPERLENS_API_BASE=http://localhost:8080
+ENV PORT=8080 \
+    PAPERLENS_API_URL=http://127.0.0.1:8000
 
-RUN useradd --create-home --uid 1001 paperlens
+COPY frontend /usr/share/nginx/html
+COPY frontend/docker-entrypoint.sh /paperlens-entrypoint.sh
+RUN sed -i 's/\r$//' /paperlens-entrypoint.sh \
+    && chmod +x /paperlens-entrypoint.sh \
+    && printf 'server {\n  listen 8080;\n  server_name _;\n  root /usr/share/nginx/html;\n  index index.html;\n  location / { try_files $uri $uri/ /index.html; }\n  location = /config.js { add_header Cache-Control "no-store"; }\n  location = /health { return 200 "ok"; add_header Content-Type text/plain; }\n}\n' > /etc/nginx/conf.d/default.conf
 
-COPY requirements-frontend.txt ./
-COPY streamlit_app.py ./
-RUN pip install --no-cache-dir -U pip \
-    && pip install --no-cache-dir -r requirements-frontend.txt \
-    && chown -R paperlens:paperlens /app
-
-USER paperlens
 EXPOSE 8080
-CMD ["sh", "-c", "streamlit run streamlit_app.py --server.port=${PORT:-8080} --server.address=0.0.0.0 --browser.gatherUsageStats=false"]
+ENTRYPOINT ["/paperlens-entrypoint.sh"]

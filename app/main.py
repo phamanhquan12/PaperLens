@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
 from app.config import get_settings
@@ -24,6 +25,14 @@ app = FastAPI(
     title="PaperLens",
     version=__version__,
     description="Research-paper ingestion, Docling parsing, and optional Luna enrichment.",
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.cors_allow_origin_regex,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
 )
 app.include_router(router)
 

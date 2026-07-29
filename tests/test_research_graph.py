@@ -11,7 +11,7 @@ from app.config import Settings, get_settings
 from app.db.repository import PaperRepository
 from app.db.session import init_db, reset_engine, session_scope
 from app.embeddings import index_paper_chunks
-from app.research_graph import run_research
+from app.research_graph import route_after_library, run_research
 from app.schemas import ArtifactPaths, PaperDocument, TextElement
 
 
@@ -93,3 +93,16 @@ def test_research_graph_completes(research_env: Settings):
     # Critic may reject insufficient claims; remaining claims must have chunk ids
     for claim in report.claims:
         assert claim.get("chunk_ids")
+
+
+def test_external_discovery_stays_disabled_at_zero_budget():
+    route = route_after_library(
+        {
+            "selected_papers": [],
+            "external_searches": 0,
+            "max_external_searches": 0,
+            "step": 1,
+            "max_steps": 12,
+        }
+    )
+    assert route == "retrieve_evidence"

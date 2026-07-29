@@ -5,13 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from langchain_core.documents import Document
 
 from app.chunking import ChunkingConfig, chunk_paper_document, persist_chunks
 from app.config import Settings, get_settings
 from app.db.repository import PaperRepository
 from app.db.session import init_db, reset_engine, session_scope
 from app.embeddings import index_paper_chunks
-from app.qa import answer_paper_question
+from app.qa import GroundedSynthesis, answer_paper_question
 from app.schemas import ArtifactPaths, PaperDocument, TextElement
 
 
@@ -99,3 +100,55 @@ def test_insufficient_evidence(qa_env: Settings):
         # Still must only cite retrieved chunk ids
         assert answer.citations
         assert answer.used_chunks
+
+
+def test_langchain_grounded_mode_uses_only_valid_citations(
+    qa_env: Settings, monkeypatch
+):
+    settings = qa_env.model_copy(
+        update={
+            "llm_enabled": True,
+            "allow_external_api": True,
+            "llm_api_key": "test-key",
+            "llm_model": "test-model",
+        }
+    )
+
+    def fake_synthesize(*, question, paper_id, top_k, settings):
+        assert question
+        assert paper_id == "qa1"
+        label = "[Page 1, Section Intro]"
+        return (
+            GroundedSynthesis(
+                answer="The paper proposes temperature scaling.",
+                confidence="high",
+                used_citation_labels=[label, "[invented citation]"],
+            ),
+            [
+                Document(
+                    page_content="This paper proposes temperature scaling.",
+                    metadata={
+                        "chunk_id": "chain-chunk-1",
+                        "paper_id": "qa1",
+                        "chunk_type": "text",
+                        "section_path": ["Intro"],
+                        "page_start": 1,
+                        "page_end": 1,
+                        "citation": label,
+                    },
+                )
+            ],
+            {"retriever": "langchain_test", "returned": 1},
+        )
+
+    monkeypatch.setattr("app.qa._langchain_synthesize", fake_synthesize)
+    answer, _state = answer_paper_question(
+        paper_id="qa1",
+        question="What method does the paper propose?",
+        settings=settings,
+    )
+
+    assert answer.mode == "langchain_openai_grounded"
+    assert answer.citations
+    assert "[invented citation]" not in answer.answer
+    assert all(citation.chunk_id in answer.used_chunks for citation in answer.citations)

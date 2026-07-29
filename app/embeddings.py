@@ -1,116 +1,111 @@
-"""Embedding providers and paper chunk indexing."""
+"""LangChain embedding models and PostgreSQL vector indexing."""
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import math
-import struct
-from abc import ABC, abstractmethod
-from typing import Any, Iterable, Sequence
+from typing import Any
 
-from sqlalchemy import select
+from langchain_core.documents import Document
+from langchain_core.embeddings import DeterministicFakeEmbedding, Embeddings
+from sqlalchemy import select, text
+from sqlalchemy.pool import NullPool
 
 from app.config import Settings, get_settings
 from app.db.models import PaperChunk
 from app.db.session import session_scope
+from app.db.url_utils import classify_database_url, ensure_sslmode
 
 logger = logging.getLogger(__name__)
+
+VECTOR_COLLECTION = "paperlens_chunks"
 
 
 class EmbeddingError(Exception):
     pass
 
 
-class EmbeddingProvider(ABC):
-    name: str
-    dimensions: int
-
-    @abstractmethod
-    def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
-        raise NotImplementedError
-
-    def embed_query(self, text: str) -> list[float]:
-        return self.embed_documents([text])[0]
-
-
-class HashingEmbeddingProvider(EmbeddingProvider):
-    """Deterministic local embeddings for tests/dev without paid APIs."""
-
-    def __init__(self, dimensions: int = 384, model_name: str = "hashing-v1") -> None:
-        self.dimensions = dimensions
-        self.name = model_name
-
-    def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
-        return [self._embed_one(t) for t in texts]
-
-    def _embed_one(self, text: str) -> list[float]:
-        vec = [0.0] * self.dimensions
-        tokens = text.lower().split()
-        if not tokens:
-            tokens = ["empty"]
-        for token in tokens:
-            digest = hashlib.sha256(token.encode("utf-8")).digest()
-            # Use multiple hash lanes per token
-            for i in range(0, min(len(digest), 32), 4):
-                idx = struct.unpack_from(">I", digest, i)[0] % self.dimensions
-                sign = 1.0 if digest[i] % 2 == 0 else -1.0
-                vec[idx] += sign
-        # L2 normalize
-        norm = math.sqrt(sum(v * v for v in vec)) or 1.0
-        return [v / norm for v in vec]
-
-
-class OpenAIEmbeddingProvider(EmbeddingProvider):
-    def __init__(self, *, api_key: str, model: str, base_url: str | None = None, dimensions: int = 1536) -> None:
-        self.api_key = api_key
-        self.model = model
-        self.base_url = base_url
-        self.dimensions = dimensions
-        self.name = model
-
-    def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
-        from openai import OpenAI
-
-        kwargs: dict[str, Any] = {"api_key": self.api_key}
-        if self.base_url:
-            kwargs["base_url"] = self.base_url
-        client = OpenAI(**kwargs)
-        response = client.embeddings.create(model=self.model, input=list(texts))
-        data = sorted(response.data, key=lambda row: row.index)
-        vectors = [list(row.embedding) for row in data]
-        if vectors and len(vectors[0]) != self.dimensions:
-            # Adapt declared dimensions to provider response
-            self.dimensions = len(vectors[0])
-        return vectors
-
-
-def get_embedding_provider(settings: Settings | None = None) -> EmbeddingProvider:
+def get_embeddings(settings: Settings | None = None) -> tuple[Embeddings, str]:
+    """Return a LangChain Embeddings implementation and its stable model name."""
     cfg = settings or get_settings()
     provider = (cfg.embedding_provider or "hashing").lower()
     if provider == "hashing":
-        return HashingEmbeddingProvider(dimensions=cfg.embedding_dimensions, model_name="hashing-v1")
-    if provider == "openai":
-        if not cfg.embedding_api_key:
-            raise EmbeddingError("EMBEDDING_API_KEY required for openai embedding provider")
-        if not cfg.embedding_model:
-            raise EmbeddingError("EMBEDDING_MODEL required for openai embedding provider")
-        return OpenAIEmbeddingProvider(
-            api_key=cfg.embedding_api_key,
-            model=cfg.embedding_model,
-            base_url=cfg.embedding_base_url,
-            dimensions=cfg.embedding_dimensions,
+        return (
+            DeterministicFakeEmbedding(size=cfg.embedding_dimensions),
+            f"langchain-deterministic-{cfg.embedding_dimensions}",
         )
+    if provider == "openai":
+        if not cfg.embedding_api_key or not cfg.embedding_model:
+            raise EmbeddingError(
+                "EMBEDDING_API_KEY and EMBEDDING_MODEL are required for OpenAI embeddings"
+            )
+        from langchain_openai import OpenAIEmbeddings
+
+        kwargs: dict[str, Any] = {
+            "model": cfg.embedding_model,
+            "api_key": cfg.embedding_api_key,
+            "dimensions": cfg.embedding_dimensions,
+        }
+        if cfg.embedding_base_url:
+            kwargs["base_url"] = cfg.embedding_base_url
+        return OpenAIEmbeddings(**kwargs), cfg.embedding_model
     raise EmbeddingError(f"Unknown embedding provider: {provider}")
 
 
-def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a)) or 1.0
-    nb = math.sqrt(sum(y * y for y in b)) or 1.0
-    return float(dot / (na * nb))
+def get_vector_store(
+    settings: Settings | None = None,
+    *,
+    embeddings: Embeddings | None = None,
+):
+    """Return LangChain PGVector for PostgreSQL; SQLite intentionally has no PG store."""
+    cfg = settings or get_settings()
+    info = classify_database_url(cfg.database_url)
+    if not info.dialect.startswith("postgres"):
+        return None
+
+    from langchain_postgres import PGVector
+
+    model = embeddings or get_embeddings(cfg)[0]
+    connection = ensure_sslmode(cfg.database_url, default="require")
+    engine_args: dict[str, Any] = {"pool_pre_ping": True}
+    if info.connection_mode == "transaction_pooler":
+        engine_args = {
+            "poolclass": NullPool,
+            "connect_args": {"prepare_threshold": None},
+        }
+    return PGVector(
+        embeddings=model,
+        connection=connection,
+        collection_name=VECTOR_COLLECTION,
+        embedding_length=cfg.embedding_dimensions,
+        use_jsonb=True,
+        create_extension=True,
+        engine_args=engine_args,
+    )
+
+
+def _chunk_document(row: PaperChunk) -> Document:
+    metadata = {
+        "chunk_id": row.id,
+        "paper_id": row.paper_id,
+        "parent_chunk_id": row.parent_chunk_id,
+        "chunk_type": row.chunk_type,
+        "section_path": list(row.section_path or []),
+        "page_start": row.page_start,
+        "page_end": row.page_end,
+        **dict(row.chunk_metadata or {}),
+    }
+    page = row.page_start or row.page_end
+    section = " > ".join(row.section_path or [])
+    if row.chunk_type in {"table", "figure", "equation"}:
+        label = row.chunk_type.title()
+        metadata["citation"] = f"[{label}, Page {page}]" if page else f"[{label}]"
+    elif page and section:
+        metadata["citation"] = f"[Page {page}, Section {section}]"
+    elif page:
+        metadata["citation"] = f"[Page {page}]"
+    else:
+        metadata["citation"] = f"[Chunk {row.id[:8]}]"
+    return Document(page_content=row.content, metadata=metadata)
 
 
 def index_paper_chunks(
@@ -120,11 +115,9 @@ def index_paper_chunks(
     force: bool = False,
     batch_size: int = 32,
 ) -> dict[str, Any]:
-    """Embed paper chunks idempotently. Skips chunks that already have matching model embeddings unless force."""
+    """Index paper chunks through LangChain embeddings and PGVector."""
     cfg = settings or get_settings()
-    provider = get_embedding_provider(cfg)
-    updated = 0
-    skipped = 0
+    embeddings, model_name = get_embeddings(cfg)
     with session_scope(cfg) as session:
         rows = list(
             session.scalars(
@@ -133,39 +126,53 @@ def index_paper_chunks(
                 .order_by(PaperChunk.chunk_type, PaperChunk.id)
             )
         )
-        pending: list[PaperChunk] = []
-        for row in rows:
-            if (
-                not force
-                and row.embedding is not None
-                and row.embedding_model == provider.name
-                and isinstance(row.embedding, list)
-                and len(row.embedding) == provider.dimensions
-            ):
-                skipped += 1
-                continue
-            pending.append(row)
+        pending = [
+            row
+            for row in rows
+            if force or row.embedding_model != model_name
+        ]
+        documents = [_chunk_document(row) for row in pending]
+        ids = [row.id for row in pending]
 
-        for i in range(0, len(pending), batch_size):
-            batch = pending[i : i + batch_size]
-            vectors = provider.embed_documents([r.content for r in batch])
-            if vectors and len(vectors[0]) != provider.dimensions:
-                raise EmbeddingError(
-                    f"Embedding dimension mismatch: got {len(vectors[0])}, expected {provider.dimensions}"
+        vector_store = get_vector_store(cfg, embeddings=embeddings)
+        if vector_store is not None and documents:
+            if force:
+                existing_ids = list(
+                    session.scalars(
+                        text(
+                            "SELECT id FROM langchain_pg_embedding "
+                            "WHERE cmetadata->>'paper_id' = :paper_id"
+                        ).bindparams(paper_id=paper_id)
+                    )
                 )
-            for row, vec in zip(batch, vectors):
-                row.embedding = vec
-                row.embedding_model = provider.name
-                updated += 1
+                if existing_ids:
+                    vector_store.delete(ids=[str(value) for value in existing_ids])
+            for start in range(0, len(documents), batch_size):
+                vector_store.add_documents(
+                    documents[start : start + batch_size],
+                    ids=ids[start : start + batch_size],
+                )
+            for row in pending:
+                row.embedding = None
+                row.embedding_model = model_name
+        elif documents:
+            # SQLite test/dev fallback still delegates vector creation to LangChain.
+            for start in range(0, len(pending), batch_size):
+                batch = pending[start : start + batch_size]
+                vectors = embeddings.embed_documents([row.content for row in batch])
+                for row, vector in zip(batch, vectors):
+                    row.embedding = list(vector)
+                    row.embedding_model = model_name
         session.flush()
 
     result = {
         "paper_id": paper_id,
-        "provider": provider.name,
-        "dimensions": provider.dimensions,
-        "updated": updated,
-        "skipped": skipped,
-        "total": updated + skipped,
+        "provider": model_name,
+        "dimensions": cfg.embedding_dimensions,
+        "updated": len(pending),
+        "skipped": len(rows) - len(pending),
+        "total": len(rows),
+        "vector_store": "langchain_pgvector" if vector_store is not None else "sqlite_json_fallback",
     }
     logger.info("Indexed embeddings %s", result)
     return result

@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="PaperLens — multimodal research paper intelligence">
+  <title>PaperLens</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#home" data-route="home" aria-label="PaperLens home">
+        <span class="brand-mark">P</span>
+        <span><strong>PaperLens</strong><small>Research intelligence</small></span>
+      </a>
+      <nav id="nav">
+        <button class="nav-item active" data-route="home"><span>⌂</span> Overview</button>
+        <button class="nav-item" data-route="workspace"><span>✦</span> Agent workspace</button>
+        <button class="nav-item" data-route="library"><span>▤</span> Library</button>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="health-dot" id="health-dot"></div>
+        <span id="health-label">Connecting…</span>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <button class="mobile-menu" id="mobile-menu" aria-label="Toggle navigation">☰</button>
+        <div class="paper-context">
+          <span class="context-label">Active paper</span>
+          <select id="global-paper-select" aria-label="Select active paper">
+            <option value="">Choose from your library</option>
+          </select>
+        </div>
+        <button class="button ghost small" id="refresh-library">Refresh</button>
+      </header>
+
+      <div id="toast-region" aria-live="polite"></div>
+
+      <section class="page active" id="page-home">
+        <div class="hero">
+          <div>
+            <span class="eyebrow">MULTIMODAL RESEARCH WORKSPACE</span>
+            <h1>Read papers with<br><em>evidence, not guesses.</em></h1>
+            <p>Parse scientific PDFs, inspect tables and equations, ask grounded questions, and compare methods with page-level citations.</p>
+            <div class="hero-actions">
+              <button class="button primary" data-route="workspace">Open agent workspace</button>
+              <button class="button secondary" data-route="library">Open library</button>
+            </div>
+          </div>
+          <div class="hero-visual">
+            <div class="orb"></div>
+            <div class="floating-card fc-one"><small>Grounded QA</small><strong>Page-level citations</strong></div>
+            <div class="floating-card fc-two"><small>Docling parser</small><strong>Tables · Figures · Math</strong></div>
+          </div>
+        </div>
+        <div class="stat-grid">
+          <article class="stat-card"><span>Library</span><strong id="stat-papers">—</strong><small>papers available</small></article>
+          <article class="stat-card"><span>Processed</span><strong id="stat-completed">—</strong><small>ready to explore</small></article>
+          <article class="stat-card"><span>Evidence mode</span><strong>Grounded</strong><small>citations from retrieval</small></article>
+          <article class="stat-card"><span>Storage</span><strong>Cloud</strong><small>private GCS artifacts</small></article>
+        </div>
+        <div class="section-heading"><div><span class="eyebrow">AGENT WORKFLOW</span><h2>One conversation, specialized tools</h2></div></div>
+        <div class="workflow-strip">
+          <article><span>1</span><strong>Understand intent</strong><small>Chat naturally or ask a research question</small></article>
+          <article><span>2</span><strong>Select context</strong><small>Uploaded papers and library sources</small></article>
+          <article><span>3</span><strong>Call tools</strong><small>Reader · retrieval · discovery · comparison</small></article>
+          <article><span>4</span><strong>Verify evidence</strong><small>LangGraph critic checks citations</small></article>
+          <article><span>5</span><strong>Respond</strong><small>Answer, sources, and workflow trace together</small></article>
+        </div>
+        <div class="section-heading"><div><span class="eyebrow">RECENT ACTIVITY</span><h2>Your research library</h2></div></div>
+        <div class="paper-grid" id="recent-papers"></div>
+      </section>
+
+      <section class="page" id="page-workspace">
+        <div class="page-title"><div><span class="eyebrow">LANGGRAPH RESEARCH AGENT</span><h1>Research workspace</h1><p>Upload, read, search, compare, and synthesize through one tool-using conversation.</p></div></div>
+        <div class="agent-layout">
+          <aside class="agent-context card">
+            <span class="eyebrow">CONTEXT</span>
+            <h3>Selected papers</h3>
+            <div id="agent-papers" class="check-list"></div>
+            <label class="button secondary wide agent-upload-label">↑ Upload PDF<input id="agent-pdf-file" type="file" accept=".pdf,application/pdf" hidden></label>
+            <div id="agent-upload-state" class="agent-upload-state"></div>
+            <h3>Available tools</h3>
+            <div class="tool-chips"><span>Reader</span><span>Paper QA</span><span>arXiv</span><span>OpenAlex</span><span>Compare</span><span>Research</span><span>Math</span><span>Plot</span></div>
+          </aside>
+          <div class="agent-chat card">
+            <div class="agent-chat-header">
+              <div><strong>PaperLens agent</strong><small id="agent-live-status" aria-live="polite">Ready to research</small></div>
+              <span class="agent-state" id="agent-state"><i></i><span>Ready</span></span>
+            </div>
+            <div class="messages" id="agent-messages" aria-live="polite" aria-relevant="additions text">
+              <div class="message assistant">Hi — ask about a selected paper, find related work, compare methods, or request a research report.</div>
+            </div>
+            <div class="suggestions">
+              <button data-agent-prompt="Summarize the selected paper's contribution.">Summarize this paper</button>
+              <button data-agent-prompt="Find recent related papers on this topic.">Discover related work</button>
+              <button data-agent-prompt="Run a research workflow comparing the selected papers.">Compare and research</button>
+            </div>
+            <div class="attachment-preview hidden" id="agent-image-preview">
+              <img id="agent-image-thumbnail" alt="Image attachment preview">
+              <div><strong id="agent-image-name"></strong><small id="agent-image-size"></small></div>
+              <button type="button" id="agent-image-remove" aria-label="Remove image attachment">×</button>
+            </div>
+            <form class="composer agent-composer" id="agent-form">
+              <label class="attachment-button" for="agent-image-input" title="Attach PNG, JPEG, or WebP">
+                <span aria-hidden="true">＋</span><span class="sr-only">Attach image</span>
+                <input id="agent-image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+              </label>
+              <textarea id="agent-question" rows="2" placeholder="Ask anything about your research…" aria-label="Message PaperLens"></textarea>
+              <button class="button primary" id="agent-send" type="submit"><span>Send</span> →</button>
+            </form>
+            <small class="composer-hint">Enter to send · Shift+Enter for a new line</small>
+          </div>
+          <aside class="agent-output card">
+            <div class="tabs" id="agent-output-tabs"><button class="active" data-agent-tab="results">Results</button><button data-agent-tab="trace">Tool trace</button></div>
+            <div id="agent-results"><div class="empty-inline">Tool results, reader context, and citations will appear here.</div></div>
+            <div id="agent-trace" class="hidden"><div class="empty-inline">No tools called yet.</div></div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="page" id="page-library">
+        <div class="page-title"><div><span class="eyebrow">PERSONAL COLLECTION</span><h1>Paper Library</h1><p>Search by title, author, filename, year, or processing state.</p></div></div>
+        <div class="toolbar card">
+          <label class="search-box"><span>⌕</span><input id="library-search" placeholder="Search titles, authors, filenames…"></label>
+          <select id="library-status"><option value="">All statuses</option><option value="completed">Completed</option><option value="accepted">Processing</option><option value="failed">Failed</option></select>
+        </div>
+        <div class="paper-grid" id="library-grid"></div>
+      </section>
+
+      <section class="page" id="page-upload">
+        <div class="page-title"><div><span class="eyebrow">INGESTION</span><h1>Upload a research paper</h1><p>PDFs are parsed into traceable text, sections, tables, figures, and formulas.</p></div></div>
+        <div class="upload-layout">
+          <div class="dropzone card" id="dropzone">
+            <input id="pdf-file" type="file" accept=".pdf,application/pdf" hidden>
+            <div class="upload-icon">↑</div>
+            <h2>Drop your PDF here</h2>
+            <p>or click to browse · maximum 50 MB</p>
+            <div class="file-chip hidden" id="file-chip"></div>
+          </div>
+          <aside class="card process-card">
+            <span class="eyebrow">WHAT HAPPENS NEXT</span>
+            <ol class="process-list">
+              <li><span>1</span><div><strong>Secure upload</strong><small>Original PDF saved privately</small></div></li>
+              <li><span>2</span><div><strong>Structure parsing</strong><small>Docling reads layout and content</small></div></li>
+              <li><span>3</span><div><strong>Asset extraction</strong><small>Tables, figures, and formulas</small></div></li>
+              <li><span>4</span><div><strong>Retrieval index</strong><small>Page-aware chunks for grounded QA</small></div></li>
+            </ol>
+            <button class="button primary wide" id="upload-button" disabled>Parse paper</button>
+          </aside>
+        </div>
+        <div class="operation hidden" id="upload-operation">
+          <div class="spinner"></div><div><strong id="upload-status">Uploading…</strong><small id="upload-detail">Keep this tab open while the paper is processed.</small></div>
+        </div>
+        <div id="upload-result"></div>
+      </section>
+
+      <section class="page" id="page-reader">
+        <div class="page-title inline"><div><span class="eyebrow">STRUCTURED DOCUMENT</span><h1>Paper Reader</h1><p id="reader-subtitle">Select a paper from your library.</p></div><button class="button secondary" id="reader-index">Rebuild index</button></div>
+        <div class="empty-state" id="reader-empty"><span>◫</span><h2>Choose a paper above</h2><p>No paper ID required. Select by title in the top bar.</p></div>
+        <div class="hidden" id="reader-content">
+          <div class="reader-summary" id="reader-summary"></div>
+          <div class="tabs" id="reader-tabs">
+            <button class="active" data-tab="text">Document</button><button data-tab="figures">Figures</button><button data-tab="tables">Tables</button><button data-tab="formulas">Equations</button><button data-tab="chunks">Retrieval chunks</button>
+          </div>
+          <div id="reader-panel"></div>
+        </div>
+      </section>
+
+      <section class="page" id="page-chat">
+        <div class="page-title"><div><span class="eyebrow">GROUNDED QUESTION ANSWERING</span><h1>Ask a paper</h1><p>Answers are extracted from retrieved evidence and cite real pages.</p></div></div>
+        <div class="empty-state compact" id="chat-empty"><span>◌</span><h2>Select a paper to begin</h2><p>Use the paper selector in the top bar.</p></div>
+        <div class="chat-shell hidden" id="chat-shell">
+          <div class="chat-paper" id="chat-paper"></div>
+          <div class="messages" id="messages"><div class="message assistant">Ask about the method, results, datasets, limitations, or a specific equation.</div></div>
+          <form class="composer" id="chat-form"><textarea id="chat-question" rows="2" placeholder="What are the paper's main findings?"></textarea><button class="button primary" type="submit">Ask →</button></form>
+        </div>
+      </section>
+
+      <section class="page" id="page-compare">
+        <div class="page-title"><div><span class="eyebrow">CROSS-PAPER ANALYSIS</span><h1>Compare papers</h1><p>Select papers by title and contrast their methods, evidence, or limitations.</p></div></div>
+        <div class="compare-layout">
+          <div class="card"><h3>Select at least two papers</h3><div id="compare-papers" class="check-list"></div></div>
+          <div class="card"><label>Comparison question<textarea id="compare-question" rows="5">How do the methods, datasets, results, and limitations differ?</textarea></label><button class="button primary wide" id="compare-button">Compare selected papers</button></div>
+        </div>
+        <div id="compare-result"></div>
+      </section>
+
+      <section class="page" id="page-discover">
+        <div class="page-title"><div><span class="eyebrow">SCHOLARLY DISCOVERY</span><h1>Find related research</h1><p>Search OpenAlex or arXiv without scraping the web.</p></div></div>
+        <form class="discovery-bar card" id="discover-form"><input id="discover-query" value="neural network calibration" placeholder="Search papers…"><select id="discover-source"><option value="auto">Best available</option><option value="openalex">OpenAlex</option><option value="arxiv">arXiv</option></select><button class="button primary">Search</button></form>
+        <div class="result-list" id="discover-results"></div>
+      </section>
+
+      <section class="page" id="page-research">
+        <div class="page-title"><div><span class="eyebrow">BOUNDED LANGGRAPH WORKFLOW</span><h1>Research workspace</h1><p>Plan, retrieve, analyze, verify claims, and synthesize with inspectable steps.</p></div></div>
+        <div class="research-layout">
+          <div class="card"><label>Research question<textarea id="research-question" rows="6">Compare the selected papers' approaches and identify shared limitations.</textarea></label><h3>Sources</h3><div id="research-papers" class="check-list"></div><button class="button primary wide" id="research-button">Run research workflow</button></div>
+          <div id="research-result" class="report card"><div class="empty-inline">The structured report will appear here.</div></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div class="modal-backdrop hidden" id="confirm-modal"><div class="modal"><h2>Delete this paper?</h2><p>This removes its database records and stored artifacts. This cannot be undone.</p><div><button class="button ghost" id="cancel-delete">Cancel</button><button class="button danger" id="confirm-delete">Delete paper</button></div></div></div>
+  <script src="/config.js"></script>
+  <script src="/vendor/marked/marked.umd.js"></script>
+  <script src="/vendor/dompurify/purify.min.js"></script>
+  <script src="/vendor/katex/katex.min.js"></script>
+  <script src="/vendor/katex/contrib/auto-render.min.js"></script>
+  <script src="/app.js" defer></script>
+</body>
+</html>

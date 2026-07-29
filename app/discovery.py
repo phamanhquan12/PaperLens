@@ -130,9 +130,9 @@ def search_arxiv(
         "sortBy": "relevance",
         "sortOrder": "descending",
     }
-    url = "http://export.arxiv.org/api/query?" + urlencode(params)
-    with httpx.Client(timeout=timeout) as client:
-        resp = client.get(url)
+    url = "https://export.arxiv.org/api/query?" + urlencode(params)
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        resp = client.get(url, headers={"User-Agent": "PaperLens/0.1"})
         resp.raise_for_status()
         text = resp.text
     root = ET.fromstring(text)

@@ -102,7 +102,7 @@ def node_search_library(state: ResearchState, settings: Settings) -> ResearchSta
 
 
 def node_external_discovery(state: ResearchState, settings: Settings) -> ResearchState:
-    if int(state.get("external_searches") or 0) >= int(state.get("max_external_searches") or 1):
+    if int(state.get("external_searches") or 0) >= int(state.get("max_external_searches") or 0):
         _record_tool(state, "external_discovery", {"skipped": True, "reason": "budget"})
         state["step"] = int(state.get("step") or 0) + 1
         return state
@@ -267,7 +267,7 @@ def route_after_library(state: ResearchState) -> Literal["external_discovery", "
     if int(state.get("step") or 0) >= int(state.get("max_steps") or 12):
         return "retrieve_evidence"
     # External discovery optional once
-    if int(state.get("external_searches") or 0) < int(state.get("max_external_searches") or 1):
+    if int(state.get("external_searches") or 0) < int(state.get("max_external_searches") or 0):
         return "external_discovery"
     return "retrieve_evidence"
 
@@ -325,7 +325,13 @@ def run_research(
         "citations": [],
         "errors": [],
         "tool_calls": [],
-        "cost": {"mode": "local_extractive"},
+        "cost": {
+            "mode": (
+                "langgraph_with_langchain_llm"
+                if cfg.llm_enabled and cfg.allow_external_api
+                else "langgraph_local_extractive"
+            )
+        },
         "step": 0,
         "max_steps": max_steps,
         "max_external_searches": max_external_searches if enable_external else 0,
