@@ -28,6 +28,7 @@ from app.storage import (
     paper_parsed_key,
     paper_raw_pdf_key,
 )
+from app.text_enrichment import enrich_cleaned_text
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,8 @@ def _persist_start(
     paper_id: str,
     filename: str,
     storage_uri: str,
+    user_id: str,
+    existing_job_id: str | None = None,
 ) -> str | None:
     try:
         with session_scope(cfg) as session:
@@ -52,8 +55,13 @@ def _persist_start(
                 storage_uri=storage_uri,
                 status="processing",
                 parse_status="running",
+                user_id=user_id,
             )
-            job = repo.create_job(paper_id=paper_id, job_type="ingest", status="running")
+            job = session.get(Job, existing_job_id) if existing_job_id else None
+            if job is not None:
+                repo.update_job(job, status="running", progress=0.05)
+            else:
+                job = repo.create_job(paper_id=paper_id, job_type="ingest", status="running")
             return job.id
     except Exception as exc:
         logger.warning("Database unavailable during ingest start: %s", exc)
@@ -73,6 +81,7 @@ def _persist_failure(
     warnings: list[str],
     page_count: int,
     job_id: str | None,
+    user_id: str,
 ) -> None:
     try:
         with session_scope(cfg) as session:
@@ -87,6 +96,7 @@ def _persist_failure(
                 artifacts=artifacts,
                 warnings=warnings,
                 page_count=page_count,
+                user_id=user_id,
             )
             job = session.get(Job, job_id) if job_id else session.scalar(
                 select(Job)
@@ -100,6 +110,20 @@ def _persist_failure(
         logger.warning("Failed to persist incomplete ingest to DB: %s", exc)
 
 
+def _update_job_progress(cfg: Settings, job_id: str | None, progress: float) -> None:
+    if not job_id:
+        return
+    try:
+        with session_scope(cfg) as session:
+            job = session.get(Job, job_id)
+            if job is not None:
+                PaperRepository(session).update_job(
+                    job, status="running", progress=progress
+                )
+    except Exception:
+        logger.debug("Could not update ingest progress", exc_info=True)
+
+
 def _persist_success(
     cfg: Settings,
     *,
@@ -107,11 +131,14 @@ def _persist_success(
     artifacts: ArtifactPaths,
     parse_status: str,
     job_id: str | None,
+    user_id: str,
 ) -> None:
     try:
         with session_scope(cfg) as session:
             repo = PaperRepository(session)
-            paper = repo.replace_document_graph(paper_doc, artifacts)
+            paper = repo.replace_document_graph(
+                paper_doc, artifacts, user_id=user_id
+            )
             paper.parse_status = parse_status
             paper.status = "completed"
             if job_id:
@@ -139,6 +166,8 @@ def _ingest_pdf_bytes_impl(
     settings: Settings | None = None,
     storage: StorageBackend | None = None,
     paper_id: str | None = None,
+    user_id: str = "local-user",
+    job_id: str | None = None,
 ) -> IngestionResponse:
     """Validate, store, parse, clean, and export a research PDF."""
     cfg = settings or get_settings()
@@ -162,7 +191,14 @@ def _ingest_pdf_bytes_impl(
 
     artifacts = ArtifactPaths(raw_pdf=raw_key)
     warnings: list[str] = []
-    job_id = _persist_start(cfg, paper_id=pid, filename=safe_name, storage_uri=raw_key)
+    job_id = _persist_start(
+        cfg,
+        paper_id=pid,
+        filename=safe_name,
+        storage_uri=raw_key,
+        user_id=user_id,
+        existing_job_id=job_id,
+    )
 
     with tempfile.TemporaryDirectory(prefix="paperlens-") as tmp:
         local_pdf = Path(tmp) / safe_name
@@ -170,6 +206,7 @@ def _ingest_pdf_bytes_impl(
 
         parser = DoclingParser(cfg)
         parse_result = parser.convert(local_pdf)
+        _update_job_progress(cfg, job_id, 0.45)
         report = dict(parse_result.parse_report)
         warnings.extend(report.get("warnings") or [])
 
@@ -215,6 +252,7 @@ def _ingest_pdf_bytes_impl(
                 warnings=warnings,
                 page_count=pages,
                 job_id=job_id,
+                user_id=user_id,
             )
             return IngestionResponse(
                 paper_id=pid,
@@ -253,6 +291,7 @@ def _ingest_pdf_bytes_impl(
                 "formulas": asset_bundle["formulas"],
             },
         )
+        _update_job_progress(cfg, job_id, 0.75)
 
         report["cleaning_statistics"] = cleaning.statistics
         store.save_json(report_key, report)
@@ -272,6 +311,21 @@ def _ingest_pdf_bytes_impl(
 
         paper_doc: PaperDocument = cleaning.paper_document
         paper_doc.warnings = list(dict.fromkeys([*paper_doc.warnings, *warnings]))
+        if cfg.ingest_auto_text_enrich and cfg.text_enrichment_enabled:
+            try:
+                text_enrichment = enrich_cleaned_text(
+                    paper_doc,
+                    settings=cfg,
+                    storage=store,
+                )
+                paper_doc.metadata["text_enrichment"] = {
+                    "source": "cleaned_docling_text",
+                    "sections": text_enrichment,
+                }
+            except Exception as exc:
+                warning = f"text_enrichment_failed:{type(exc).__name__}"
+                paper_doc.warnings.append(warning)
+                logger.warning("Optional cleaned text enrichment failed: %s", type(exc).__name__)
         paper_key = paper_normalized_key(pid, "paper_document.json")
         store.save_json(paper_key, paper_doc.model_dump(mode="json"))
         artifacts.paper_document = paper_key
@@ -311,6 +365,7 @@ def _ingest_pdf_bytes_impl(
             artifacts=artifacts,
             parse_status=parse_result.validation.status,
             job_id=job_id,
+            user_id=user_id,
         )
 
         # Structure-aware chunking (Phase 3)
@@ -373,6 +428,8 @@ def ingest_pdf_bytes(
     settings: Settings | None = None,
     storage: StorageBackend | None = None,
     paper_id: str | None = None,
+    user_id: str = "local-user",
+    job_id: str | None = None,
 ) -> IngestionResponse:
     """Run ingestion and persist an explicit failure state on unexpected errors."""
     cfg = settings or get_settings()
@@ -385,6 +442,8 @@ def ingest_pdf_bytes(
             settings=cfg,
             storage=store,
             paper_id=pid,
+            user_id=user_id,
+            job_id=job_id,
         )
     except IngestionError:
         raise
@@ -421,5 +480,6 @@ def ingest_pdf_bytes(
             warnings=[],
             page_count=0,
             job_id=None,
+            user_id=user_id,
         )
         raise

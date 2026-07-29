@@ -20,6 +20,7 @@ SECRET_SOURCES = {
         "EMBEDDING_MODEL",
         "BIDPILOT_OPENAI_EMBEDDING_MODEL",
     ),
+    "paperlens-supabase-jwt-secret": ("SUPABASE_JWT_SECRET",),
 }
 
 

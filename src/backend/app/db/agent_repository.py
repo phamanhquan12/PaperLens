@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.models import AgentConversation, AgentMessage
@@ -24,29 +24,60 @@ class AgentConversationRepository:
         conversation_id: str,
         *,
         selected_papers: list[str] | None = None,
+        user_id: str = "local-user",
+        title: str | None = None,
     ) -> AgentConversation:
         row = self.session.get(AgentConversation, conversation_id)
         if row is None:
             row = AgentConversation(
                 id=conversation_id,
+                user_id=user_id,
+                title=title,
                 selected_papers=list(selected_papers or []),
             )
             self.session.add(row)
             self.session.flush()
             return row
+        if row.user_id != user_id:
+            raise ValueError("Conversation belongs to another account")
+        if title and not row.title:
+            row.title = title
         if selected_papers is not None:
             row.selected_papers = list(selected_papers)
             row.updated_at = _utcnow()
             self.session.flush()
         return row
 
-    def get_with_messages(self, conversation_id: str) -> AgentConversation | None:
+    def get_with_messages(
+        self, conversation_id: str, *, user_id: str | None = None
+    ) -> AgentConversation | None:
         stmt = (
             select(AgentConversation)
             .where(AgentConversation.id == conversation_id)
             .options(selectinload(AgentConversation.messages))
         )
+        if user_id is not None:
+            stmt = stmt.where(AgentConversation.user_id == user_id)
         return self.session.scalar(stmt)
+
+    def list_for_user(self, user_id: str, *, limit: int = 100) -> list[AgentConversation]:
+        stmt = (
+            select(AgentConversation)
+            .where(AgentConversation.user_id == user_id)
+            .order_by(AgentConversation.updated_at.desc())
+            .limit(limit)
+        )
+        return list(self.session.scalars(stmt))
+
+    def delete_for_user(self, conversation_id: str, user_id: str) -> bool:
+        result = self.session.execute(
+            delete(AgentConversation).where(
+                AgentConversation.id == conversation_id,
+                AgentConversation.user_id == user_id,
+            )
+        )
+        self.session.flush()
+        return bool(result.rowcount)
 
     def replace_messages(
         self,
@@ -55,10 +86,13 @@ class AgentConversationRepository:
         *,
         selected_papers: list[str] | None = None,
         keep_last: int = 24,
+        user_id: str = "local-user",
     ) -> AgentConversation:
         """Replace conversation message rows with a bounded serializable history."""
         conversation = self.get_or_create(
-            conversation_id, selected_papers=selected_papers
+            conversation_id,
+            selected_papers=selected_papers,
+            user_id=user_id,
         )
         conversation.messages.clear()
         self.session.flush()
@@ -79,13 +113,21 @@ class AgentConversationRepository:
                     message_metadata=item.get("message_metadata"),
                 )
             )
+        if not conversation.title:
+            first_human = next(
+                (str(item.get("content") or "").strip() for item in records if item.get("role") == "human"),
+                "",
+            )
+            conversation.title = first_human[:80] or "New conversation"
         conversation.updated_at = _utcnow()
         self.session.flush()
         return conversation
 
-    def chat_turns(self, conversation_id: str) -> list[dict[str, Any]]:
+    def chat_turns(
+        self, conversation_id: str, *, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """User/assistant turns suitable for restoring the chat UI."""
-        conversation = self.get_with_messages(conversation_id)
+        conversation = self.get_with_messages(conversation_id, user_id=user_id)
         if conversation is None:
             return []
         turns: list[dict[str, Any]] = []

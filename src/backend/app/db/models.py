@@ -35,6 +35,7 @@ class Paper(Base):
     __tablename__ = "papers"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="local-user", index=True)
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
     title: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -182,6 +183,8 @@ class AgentConversation(Base):
     __tablename__ = "agent_conversations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="local-user", index=True)
+    title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     selected_papers: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(

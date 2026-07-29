@@ -27,6 +27,7 @@ class EvidenceItem(BaseModel):
 
 
 class ResearchState(TypedDict, total=False):
+    user_id: str
     research_question: str
     clarified_question: str
     search_queries: list[str]
@@ -88,7 +89,11 @@ def node_search_library(state: ResearchState, settings: Settings) -> ResearchSta
 
     selected = list(state.get("selected_papers") or [])
     with session_scope(settings) as session:
-        papers = list(session.scalars(select(Paper).where(Paper.status == "completed")))
+        stmt = select(Paper).where(Paper.status == "completed")
+        user_id = state.get("user_id")
+        if user_id:
+            stmt = stmt.where(Paper.user_id == user_id)
+        papers = list(session.scalars(stmt))
         summaries = [
             {"paper_id": p.id, "title": p.title, "filename": p.filename} for p in papers
         ]
@@ -129,7 +134,13 @@ def node_retrieve_evidence(state: ResearchState, settings: Settings) -> Research
     evidence: list[dict[str, Any]] = []
     citations: list[dict[str, Any]] = []
     for paper_id in state.get("selected_papers") or []:
-        out = retrieve(question, paper_id=paper_id, settings=settings, top_k=4)
+        out = retrieve(
+            question,
+            paper_id=paper_id,
+            settings=settings,
+            top_k=4,
+            user_id=state.get("user_id"),
+        )
         for item in out.get("results") or []:
             evidence.append(
                 {
@@ -311,11 +322,13 @@ def run_research(
     max_steps: int = 12,
     max_external_searches: int = 0,
     enable_external: bool = False,
+    user_id: str = "local-user",
 ) -> ResearchReport:
     cfg = settings or get_settings()
     app = build_research_graph(cfg)
     run_id = str(uuid4())
     initial: ResearchState = {
+        "user_id": user_id,
         "research_question": research_question,
         "selected_papers": list(selected_papers or []),
         "candidate_papers": [],

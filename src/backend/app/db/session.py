@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
@@ -116,8 +116,49 @@ def init_db(settings: Settings | None = None, *, url: str | None = None) -> Engi
     """Create all tables (SQLite-friendly migration bootstrap)."""
     engine = get_engine(settings, url=url)
     Base.metadata.create_all(bind=engine)
+    _apply_v02_columns(engine)
     logger.info("Database schema initialized")
     return engine
+
+
+def _apply_v02_columns(engine: Engine) -> None:
+    """Add nullable-compatible account/session columns to pre-v0.2 databases."""
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    with engine.begin() as connection:
+        if "papers" in tables:
+            columns = {column["name"] for column in inspector.get_columns("papers")}
+            if "user_id" not in columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE papers ADD COLUMN user_id VARCHAR(64) "
+                        "NOT NULL DEFAULT 'local-user'"
+                    )
+                )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_papers_user_id ON papers (user_id)")
+            )
+        if "agent_conversations" in tables:
+            columns = {
+                column["name"] for column in inspector.get_columns("agent_conversations")
+            }
+            if "user_id" not in columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE agent_conversations ADD COLUMN user_id VARCHAR(64) "
+                        "NOT NULL DEFAULT 'local-user'"
+                    )
+                )
+            if "title" not in columns:
+                connection.execute(
+                    text("ALTER TABLE agent_conversations ADD COLUMN title VARCHAR(512)")
+                )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_agent_conversations_user_id "
+                    "ON agent_conversations (user_id)"
+                )
+            )
 
 
 def check_database(settings: Settings | None = None) -> dict[str, object]:

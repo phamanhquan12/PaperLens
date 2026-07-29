@@ -9,7 +9,7 @@ from langchain_core.documents import Document
 from sqlalchemy import select
 
 from app.config import Settings, get_settings
-from app.db.models import PaperChunk
+from app.db.models import Paper, PaperChunk
 from app.db.session import session_scope
 from app.embeddings import get_embeddings, get_vector_store
 
@@ -95,11 +95,16 @@ def get_langchain_retriever(
     settings: Settings | None = None,
     candidate_pool: int = 40,
     use_mmr: bool = False,
+    user_id: str | None = None,
 ):
     """Build the native LangChain retriever consumed by QA chains and LangGraph tools."""
     cfg = settings or get_settings()
     with session_scope(cfg) as session:
         stmt = select(PaperChunk)
+        if user_id is not None:
+            stmt = stmt.join(Paper, Paper.id == PaperChunk.paper_id).where(
+                Paper.user_id == user_id
+            )
         if paper_id:
             stmt = stmt.where(PaperChunk.paper_id == paper_id)
         documents = [_row_document(row) for row in session.scalars(stmt)]
@@ -124,6 +129,7 @@ def retrieve(
     candidate_pool: int = 40,
     use_mmr: bool = False,
     expand_parents: bool = True,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     cfg = settings or get_settings()
     q = normalize_query(query)
@@ -132,6 +138,10 @@ def retrieve(
 
     with session_scope(cfg) as session:
         stmt = select(PaperChunk)
+        if user_id is not None:
+            stmt = stmt.join(Paper, Paper.id == PaperChunk.paper_id).where(
+                Paper.user_id == user_id
+            )
         if paper_id:
             stmt = stmt.where(PaperChunk.paper_id == paper_id)
         rows = list(session.scalars(stmt))
@@ -163,7 +173,12 @@ def retrieve(
         candidate_pool=candidate_pool,
         use_mmr=use_mmr,
     )
-    selected = list(retriever.invoke(q))[:top_k]
+    allowed_chunk_ids = set(parent_snapshots)
+    selected = [
+        document
+        for document in retriever.invoke(q)
+        if str(document.metadata.get("chunk_id") or "") in allowed_chunk_ids
+    ][:top_k]
     results: list[dict[str, Any]] = []
     for rank, document in enumerate(selected, start=1):
         metadata = dict(document.metadata)

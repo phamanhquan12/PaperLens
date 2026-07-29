@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     luna_timeout_seconds: float = 60.0
     luna_prompt_version: str = "v1"
     luna_schema_version: str = "v1"
+    text_enrichment_enabled: bool = False
+    text_enrichment_model: str = ""
+    text_enrichment_max_sections: int = 8
+    text_enrichment_max_chars_per_section: int = 6000
+    text_enrichment_max_total_chars: int = 30000
+    ingest_auto_text_enrich: bool = False
     allow_external_api: bool = False
 
     max_pdf_size_mb: int = 50
@@ -70,6 +76,13 @@ class Settings(BaseSettings):
     database_connect_timeout_seconds: int = 10
     database_statement_timeout_ms: int = 30000
     ingest_async: bool = False
+
+    # Supabase Auth. Disabled by default so local development remains self-contained.
+    auth_enabled: bool = False
+    supabase_auth_url: str | None = None
+    supabase_jwt_secret: str | None = None
+    supabase_jwt_audience: str = "authenticated"
+    supabase_jwt_issuer: str | None = None
 
     embedding_provider: str = Field(
         default="hashing",
@@ -109,7 +122,6 @@ class Settings(BaseSettings):
     )
     cors_allow_origin_regex: str = (
         r"https://paperlens-ui-[a-z0-9-]+\.(?:a\.run\.app|asia-southeast1\.run\.app)"
-        r"|https://[a-z0-9-]+\.vercel\.app"
     )
     langsmith_enabled: bool = False
     langsmith_tracing: bool = False
@@ -120,6 +132,8 @@ class Settings(BaseSettings):
     agent_max_selected_papers: int = 8
     agent_max_image_bytes: int = 2 * 1024 * 1024
     agent_history_limit: int = 24
+    agent_reasoning_enabled: bool = True
+    agent_reasoning_effort: Literal["low", "medium", "high"] = "medium"
 
     @field_validator("local_storage_root", mode="before")
     @classmethod

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -28,12 +29,22 @@ def gcloud() -> str:
 
 
 def run(cmd: list[str]) -> int:
-    print(">", " ".join(cmd))
+    displayed = [
+        re.sub(r"(SUPABASE_ANON_KEY=)[^,]+", r"\1<redacted>", item)
+        for item in cmd
+    ]
+    print(">", " ".join(displayed))
     completed = subprocess.run(cmd)
     return completed.returncode
 
 
-def deploy_api(*, gpu: bool = False, skip_build: bool = False) -> int:
+def deploy_api(
+    *,
+    gpu: bool = False,
+    skip_build: bool = False,
+    enable_auth: bool = False,
+    auth_url: str = "",
+) -> int:
     image = f"{AR_IMAGE_API}:{'gpu-latest' if gpu else 'latest'}"
     dockerfile = "Dockerfile.backend.gpu" if gpu else "Dockerfile.backend"
     cfg = Path("cloudbuild.api.yaml")
@@ -64,6 +75,32 @@ options:
         if code != 0:
             return code
 
+    runtime_env = (
+        "APP_ENV=production,STORAGE_BACKEND=gcs,"
+        f"GCP_PROJECT_ID={PROJECT},GCS_BUCKET_NAME=paperlens-dev-26-paper-storage,"
+        f"DOCLING_OCR_MODE=off,DOCLING_THREADS={4 if gpu else 1},"
+        f"DOCLING_ACCELERATOR_DEVICE={'cuda' if gpu else 'cpu'},"
+        "LUNA_ENABLED=true,LLM_ENABLED=true,ALLOW_EXTERNAL_API=true,"
+        "LANGSMITH_ENABLED=false,LANGSMITH_TRACING=false,"
+        "EMBEDDING_PROVIDER=openai,EMBEDDING_DIMENSIONS=384,INGEST_ASYNC=false,"
+        "TEXT_ENRICHMENT_ENABLED=true,INGEST_AUTO_TEXT_ENRICH=true,"
+        "AGENT_REASONING_ENABLED=true,AGENT_REASONING_EFFORT=medium"
+    )
+    runtime_secrets = (
+        "DATABASE_URL=paperlens-database-url:latest,"
+        "LLM_API_KEY=paperlens-openai-api-key:latest,"
+        "LUNA_API_KEY=paperlens-openai-api-key:latest,"
+        "EMBEDDING_API_KEY=paperlens-openai-api-key:latest,"
+        "LLM_MODEL=paperlens-openai-answer-model:latest,"
+        "LUNA_MODEL=paperlens-openai-answer-model:latest,"
+        "EMBEDDING_MODEL=paperlens-openai-embedding-model:latest"
+    )
+    if enable_auth:
+        if not auth_url:
+            raise ValueError("--supabase-auth-url is required with --enable-auth")
+        runtime_env += f",AUTH_ENABLED=true,SUPABASE_AUTH_URL={auth_url}"
+        runtime_secrets += ",SUPABASE_JWT_SECRET=paperlens-supabase-jwt-secret:latest"
+
     deploy = [
         gcloud(),
         "run",
@@ -82,20 +119,8 @@ options:
         "--min-instances=0",
         f"--max-instances={1 if gpu else 3}",
         f"--max={1 if gpu else 10}",
-        "--set-env-vars=APP_ENV=production,STORAGE_BACKEND=gcs,"
-        f"GCP_PROJECT_ID={PROJECT},GCS_BUCKET_NAME=paperlens-dev-26-paper-storage,"
-        f"DOCLING_OCR_MODE=off,DOCLING_THREADS={4 if gpu else 1},"
-        f"DOCLING_ACCELERATOR_DEVICE={'cuda' if gpu else 'cpu'},"
-        "LUNA_ENABLED=true,LLM_ENABLED=true,ALLOW_EXTERNAL_API=true,"
-        "LANGSMITH_ENABLED=false,LANGSMITH_TRACING=false,"
-        "EMBEDDING_PROVIDER=openai,EMBEDDING_DIMENSIONS=384,INGEST_ASYNC=false",
-        "--set-secrets=DATABASE_URL=paperlens-database-url:latest,"
-        "LLM_API_KEY=paperlens-openai-api-key:latest,"
-        "LUNA_API_KEY=paperlens-openai-api-key:latest,"
-        "EMBEDDING_API_KEY=paperlens-openai-api-key:latest,"
-        "LLM_MODEL=paperlens-openai-answer-model:latest,"
-        "LUNA_MODEL=paperlens-openai-answer-model:latest,"
-        "EMBEDDING_MODEL=paperlens-openai-embedding-model:latest",
+        f"--set-env-vars={runtime_env}",
+        f"--set-secrets={runtime_secrets}",
     ]
     if gpu:
         deploy.extend(
@@ -111,7 +136,7 @@ options:
     return run(deploy)
 
 
-def deploy_ui(api_url: str) -> int:
+def deploy_ui(api_url: str, *, auth_url: str = "", anon_key: str = "") -> int:
     image = f"{AR_IMAGE_UI}:latest"
     cfg = Path("cloudbuild.ui.yaml")
     cfg.write_text(
@@ -137,6 +162,9 @@ timeout: 1800s
     )
     if code != 0:
         return code
+    runtime_env = f"PAPERLENS_API_BASE={api_url},PAPERLENS_API_URL={api_url}"
+    if auth_url and anon_key:
+        runtime_env += f",SUPABASE_AUTH_URL={auth_url},SUPABASE_ANON_KEY={anon_key}"
     return run(
         [
             gcloud(),
@@ -152,7 +180,7 @@ timeout: 1800s
             "--memory=256Mi",
             "--cpu=1",
             "--timeout=300",
-            f"--set-env-vars=PAPERLENS_API_BASE={api_url},PAPERLENS_API_URL={api_url}",
+            f"--set-env-vars={runtime_env}",
         ]
     )
 
@@ -161,6 +189,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("target", choices=["api", "ui", "both"])
     parser.add_argument("--api-url", default="")
+    parser.add_argument("--enable-auth", action="store_true")
+    parser.add_argument("--supabase-auth-url", default=os.environ.get("SUPABASE_AUTH_URL", ""))
+    parser.add_argument("--supabase-anon-key", default=os.environ.get("SUPABASE_ANON_KEY", ""))
     parser.add_argument(
         "--gpu",
         action="store_true",
@@ -173,7 +204,12 @@ def main() -> int:
     )
     args = parser.parse_args()
     if args.target in {"api", "both"}:
-        code = deploy_api(gpu=args.gpu, skip_build=args.skip_build)
+        code = deploy_api(
+            gpu=args.gpu,
+            skip_build=args.skip_build,
+            enable_auth=args.enable_auth,
+            auth_url=args.supabase_auth_url,
+        )
         if code != 0:
             return code
     if args.target in {"ui", "both"}:
@@ -194,7 +230,11 @@ def main() -> int:
             ).strip()
             api_url = out
             print("Resolved API URL:", api_url)
-        return deploy_ui(api_url)
+        return deploy_ui(
+            api_url,
+            auth_url=args.supabase_auth_url if args.enable_auth else "",
+            anon_key=args.supabase_anon_key if args.enable_auth else "",
+        )
     return 0
 
 

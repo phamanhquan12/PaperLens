@@ -1,5 +1,14 @@
 const API = (window.PAPERLENS_CONFIG?.apiUrl || "http://127.0.0.1:8000").replace(/\/$/, "");
+const AUTH_URL = String(window.PAPERLENS_CONFIG?.supabaseAuthUrl || "").replace(/\/$/, "");
+const AUTH_ANON_KEY = String(window.PAPERLENS_CONFIG?.supabaseAnonKey || "");
+const AUTH_CONFIGURED = Boolean(AUTH_URL && AUTH_ANON_KEY && !AUTH_URL.includes("${"));
 const AGENT_CONVERSATION_KEY = "paperlens.agentConversationId";
+const AUTH_SESSION_KEY = "paperlens.authSession.v1";
+const INGESTION_JOBS_KEY = "paperlens.ingestionJobs.v1";
+function readStoredJson(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); }
+  catch { return fallback; }
+}
 const state = {
   papers: [],
   activePaperId: localStorage.getItem("paperlens.activePaper") || "",
@@ -14,10 +23,14 @@ const state = {
   agentTrace: [],
   agentLiveTool: null,
   agentActive: false,
-  agentImage: null
+  agentImage: null,
+  agentSessions: [],
+  authSession: readStoredJson(AUTH_SESSION_KEY, null),
+  ingestionJobs: readStoredJson(INGESTION_JOBS_KEY, {})
 };
 const $ = (q, root = document) => root.querySelector(q);
 const $$ = (q, root = document) => [...root.querySelectorAll(q)];
+const activeJobPolls = new Set();
 
 function escapeHtml(value = "") {
   return String(value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[c]));
@@ -29,7 +42,9 @@ function toast(message, type = "") {
   $("#toast-region").append(el); setTimeout(() => el.remove(), 4200);
 }
 async function api(path, options = {}) {
-  const response = await fetch(`${API}${path}`, { ...options, headers: { ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...(options.headers || {}) } });
+  await ensureAuthSession();
+  const token = state.authSession?.access_token;
+  const response = await fetch(`${API}${path}`, { ...options, headers: { ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...(token ? { "Authorization": `Bearer ${token}` } : {}), ...(options.headers || {}) } });
   const text = await response.text(); let data;
   try { data = text ? JSON.parse(text) : {}; } catch { data = { detail: text || response.statusText }; }
   if (!response.ok) {
@@ -43,12 +58,120 @@ async function api(path, options = {}) {
   }
   return data;
 }
+function storeAuthSession(session) {
+  state.authSession = session || null;
+  if (session) localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(session));
+  else localStorage.removeItem(AUTH_SESSION_KEY);
+}
+async function authRequest(path, body) {
+  const response = await fetch(`${AUTH_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "apikey": AUTH_ANON_KEY },
+    body: JSON.stringify(body)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.msg || data.error_description || data.message || `Authentication failed (${response.status})`);
+  return data;
+}
+async function ensureAuthSession() {
+  if (!AUTH_CONFIGURED || !state.authSession) return;
+  const expiresAt = Number(state.authSession.expires_at || 0);
+  if (!expiresAt || expiresAt * 1000 > Date.now() + 60000) return;
+  try {
+    const refreshed = await authRequest("/auth/v1/token?grant_type=refresh_token", { refresh_token: state.authSession.refresh_token });
+    storeAuthSession(refreshed);
+    renderAccount();
+  } catch {
+    storeAuthSession(null);
+    $("#auth-modal").classList.remove("hidden");
+    throw new Error("Your session expired. Please sign in again.");
+  }
+}
+function renderAccount() {
+  const button = $("#account-button");
+  if (!AUTH_CONFIGURED) { button.classList.add("hidden"); return; }
+  const email = state.authSession?.user?.email || "";
+  button.classList.toggle("hidden", !state.authSession);
+  $("#account-label").textContent = email || "Account";
+  $("#account-avatar").textContent = (email[0] || "A").toUpperCase();
+}
+async function submitAuth(mode = "signin") {
+  const email = $("#auth-email").value.trim(), password = $("#auth-password").value;
+  $("#auth-error").textContent = "";
+  try {
+    const path = mode === "signup" ? "/auth/v1/signup" : "/auth/v1/token?grant_type=password";
+    const result = await authRequest(path, { email, password });
+    if (!result.access_token) {
+      $("#auth-error").textContent = "Check your email to confirm the account, then sign in.";
+      return;
+    }
+    storeAuthSession(result);
+    $("#auth-modal").classList.add("hidden");
+    renderAccount();
+    await Promise.all([loadLibrary(), loadAgentSessions()]);
+    await restoreAgentConversation();
+    resumeIngestionJobs();
+  } catch (error) { $("#auth-error").textContent = error.message; }
+}
+function initializeAuth() {
+  renderAccount();
+  if (AUTH_CONFIGURED && !state.authSession) {
+    $("#auth-modal").classList.remove("hidden");
+    return false;
+  }
+  return true;
+}
+function protectMath(value = "") {
+  const math = [], code = [];
+  const addMath = (expression, display) => {
+    const source = String(expression).trim().replace(/^\$\$|\$\$$/g, "").trim();
+    const encoded = escapeHtml(encodeURIComponent(source));
+    return display
+      ? `\n<div class="math-slot math-display" data-math="${encoded}" data-display="true"></div>\n`
+      : `<span class="math-slot" data-math="${encoded}" data-display="false"></span>`;
+  };
+  let text = String(value).replace(/\r\n?/g, "\n");
+  text = text.replace(/```(?:latex|tex|math)\s*\n([\s\S]*?)```/gi, (_, expression) => addMath(expression, true));
+  text = text.replace(/```[\s\S]*?```/g, block => {
+    const token = `PAPERLENSCODEBLOCK${code.length}TOKEN`;
+    code.push(block);
+    return token;
+  });
+  text = text.replace(/`[^`\n]+`/g, block => {
+    const token = `PAPERLENSCODEBLOCK${code.length}TOKEN`;
+    code.push(block);
+    return token;
+  });
+  text = text.replace(/\$\$([\s\S]+?)\$\$/g, (_, expression) => addMath(expression, true));
+  text = text.replace(/\\\[([\s\S]+?)\\\]/g, (_, expression) => addMath(expression, true));
+  text = text.replace(/\\begin\{(equation\*?|align\*?|gather\*?)\}([\s\S]+?)\\end\{\1\}/g, (match) => addMath(match, true));
+  text = text.replace(/\\\((.+?)\\\)/g, (_, expression) => addMath(expression, false));
+  text = text.replace(/(^|[^\\$])\$([^$\n]+?)\$/g, (_, prefix, expression) => `${prefix}${addMath(expression, false)}`);
+  code.forEach((block, index) => { text = text.replace(`PAPERLENSCODEBLOCK${index}TOKEN`, block); });
+  return text;
+}
 function markdownHtml(value = "") {
+  const protectedValue = protectMath(value);
   if (!window.marked || !window.DOMPurify) return escapeHtml(value).replace(/\n/g, "<br>");
-  return DOMPurify.sanitize(marked.parse(String(value), { gfm: true, breaks: true }));
+  return DOMPurify.sanitize(marked.parse(protectedValue, { gfm: true, breaks: true }));
 }
 function renderMath(root) {
-  if (!window.renderMathInElement || !root) return;
+  if (!root) return;
+  const slots = $$(".math-slot[data-math]", root);
+  slots.forEach(slot => {
+    let expression = "";
+    try { expression = decodeURIComponent(slot.dataset.math || ""); } catch { expression = slot.dataset.math || ""; }
+    if (!window.katex) { slot.textContent = expression; return; }
+    try {
+      katex.render(expression, slot, { displayMode: slot.dataset.display === "true", throwOnError: true, strict: "warn" });
+    } catch {
+      slot.classList.add("math-fallback");
+      slot.textContent = expression;
+      slot.title = "This expression could not be rendered by KaTeX";
+    }
+  });
+  if (slots.length) return;
+  if (!window.renderMathInElement) return;
   renderMathInElement(root, {
     delimiters: [
       { left: "$$", right: "$$", display: true },
@@ -72,14 +195,18 @@ function setAgentActivity(active, detail = "Ready to research") {
   $(".agent-chat")?.classList.toggle("streaming", active);
   $("#agent-send").disabled = active;
   $("#agent-image-input").disabled = active;
-  $$(".suggestions button").forEach(button => { button.disabled = active; });
+  $("#agent-pdf-file").disabled = active;
+  $("#agent-tools-toggle").disabled = active;
+  $$("#agent-tools-menu button").forEach(button => { button.disabled = active; });
   $("#agent-state span").textContent = active ? "Working" : "Ready";
   $("#agent-live-status").textContent = detail;
 }
 async function streamApi(path, payload, onEvent) {
+  await ensureAuthSession();
+  const token = state.authSession?.access_token;
   const response = await fetch(`${API}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
+    headers: { "Content-Type": "application/json", "Accept": "text/event-stream", ...(token ? { "Authorization": `Bearer ${token}` } : {}) },
     body: JSON.stringify(payload)
   });
   if (!response.ok) {
@@ -122,7 +249,6 @@ function navigate(route) {
   if (route === "reader") loadReader();
   if (route === "chat") updateChatPaper();
   if (route === "library") renderLibrary();
-  if (route === "workspace") renderAgentPapers();
 }
 async function loadLibrary(showToast = false) {
   const result = await api("/papers?limit=200");
@@ -132,7 +258,7 @@ async function loadLibrary(showToast = false) {
   $("#stat-papers").textContent = result.count ?? state.papers.length;
   $("#stat-completed").textContent = state.papers.filter(p => p.status === "completed").length;
   $("#recent-papers").innerHTML = state.papers.slice(0, 6).map(paperCard).join("") || `<div class="empty-inline">No papers yet — upload your first PDF.</div>`;
-  renderLibrary(); renderPaperChecks(); renderAgentPapers(); updateChatPaper();
+  renderLibrary(); renderPaperChecks(); updateChatPaper();
   if (showToast) toast("Library refreshed");
 }
 function renderLibrary() {
@@ -146,14 +272,9 @@ function renderPaperChecks() {
   const html = state.papers.filter(p => p.status === "completed").map(p => `<label class="check-item"><input type="checkbox" value="${escapeHtml(p.paper_id)}"><span>${escapeHtml(titleOf(p))}<small>${p.page_count || 0} pages · ${escapeHtml(p.filename)}</small></span></label>`).join("") || "<p>No completed papers available.</p>";
   $("#compare-papers").innerHTML = html; $("#research-papers").innerHTML = html;
 }
-function renderAgentPapers() {
-  const target = $("#agent-papers"); if (!target) return;
-  const completed = state.papers.filter(p => p.status === "completed");
-  target.innerHTML = completed.map(p => `<label class="check-item"><input type="checkbox" value="${escapeHtml(p.paper_id)}" ${p.paper_id === state.activePaperId ? "checked" : ""}><span>${escapeHtml(titleOf(p))}<small>${p.page_count || 0} pages</small></span></label>`).join("") || `<p>No papers yet. Upload one below.</p>`;
-}
 function selectPaper(id, route) {
   state.activePaperId = id; localStorage.setItem("paperlens.activePaper", id); $("#global-paper-select").value = id;
-  state.document = state.assets = state.chunks = null; renderAgentPapers(); updateChatPaper(); if (route) navigate(route);
+  state.document = state.assets = state.chunks = null; updateChatPaper(); if (route) navigate(route);
 }
 
 async function loadReader() {
@@ -178,8 +299,22 @@ async function loadReader() {
 }
 function assetCard(item, type) {
   const url = `${API}/papers/${encodeURIComponent(state.activePaperId)}/assets/${type}/${encodeURIComponent(item.element_id)}/content`;
-  return `<article class="asset-card card">${item.image_uri ? `<img loading="lazy" src="${url}" alt="${escapeHtml(type)} ${escapeHtml(item.element_id)}" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'asset-placeholder',textContent:'Preview unavailable'}))">` : `<div class="asset-placeholder">No image preview</div>`}
+  return `<article class="asset-card card">${item.image_uri ? `<img loading="lazy" data-asset-src="${escapeHtml(url)}" alt="${escapeHtml(type)} ${escapeHtml(item.element_id)}">` : `<div class="asset-placeholder">No image preview</div>`}
     <h3>${escapeHtml(item.caption || item.element_id)}</h3><p>Page ${item.page || "—"}${item.docling_text ? ` · ${escapeHtml(item.docling_text)}` : ""}</p>${item.needs_enrichment ? `<span class="status accepted">Needs transcription</span>` : ""}</article>`;
+}
+async function loadProtectedImages(root) {
+  await ensureAuthSession();
+  const token = state.authSession?.access_token;
+  $$(".asset-card img[data-asset-src]", root).forEach(async image => {
+    try {
+      const response = await fetch(image.dataset.assetSrc, { headers: token ? { "Authorization": `Bearer ${token}` } : {} });
+      if (!response.ok) throw new Error("preview unavailable");
+      image.src = URL.createObjectURL(await response.blob());
+      image.onload = () => URL.revokeObjectURL(image.src);
+    } catch {
+      image.replaceWith(Object.assign(document.createElement("div"), { className:"asset-placeholder", textContent:"Preview unavailable" }));
+    }
+  });
 }
 function renderReaderPanel() {
   if (!state.document) return;
@@ -192,6 +327,7 @@ function renderReaderPanel() {
     const type = tab === "figures" ? "figure" : tab === "tables" ? "table" : "formula";
     const items = state.assets?.[tab] || [];
     panel.innerHTML = `<div class="asset-grid">${items.map(i => assetCard(i, type)).join("") || `<div class="empty-inline">No ${tab} were detected.</div>`}</div>`;
+    loadProtectedImages(panel);
   }
 }
 function updateChatPaper() {
@@ -205,8 +341,12 @@ function appendMessage(text, kind, extra = "") {
 function citeLabel(c) { return c.label || `[Page ${c.page || "—"}]`; }
 
 function selectedAgentPapers() {
-  const checked = $$("#agent-papers input:checked").map(input => input.value);
-  return checked.length ? checked : (state.activePaperId ? [state.activePaperId] : []);
+  return state.activePaperId ? [state.activePaperId] : [];
+}
+function setToolsMenu(open) {
+  const menu = $("#agent-tools-menu"), toggle = $("#agent-tools-toggle");
+  menu.classList.toggle("hidden", !open);
+  toggle.setAttribute("aria-expanded", String(open));
 }
 function plotSeries(artifact) {
   if (Array.isArray(artifact.series)) {
@@ -283,10 +423,11 @@ function renderAgentArtifacts() {
     if (artifact.kind === "paper_reader") return `<div class="agent-result"><span class="eyebrow">READER</span><h3>${escapeHtml(artifact.title)}</h3><p>${artifact.page_count} pages · ${(artifact.counts?.figures || 0)} figures · ${(artifact.counts?.tables || 0)} tables</p>${(artifact.sections || []).slice(0,12).map(section => `<div class="finding"><strong>${escapeHtml(section.heading || (section.section_path || []).join(" › "))}</strong><small>Page ${section.page_start || "—"}</small></div>`).join("")}</div>`;
     if (artifact.kind === "research_report") return `<div class="agent-result"><span class="eyebrow">LANGGRAPH REPORT</span><h3>Research evidence summary</h3><p class="artifact-summary">The complete synthesis is shown in chat. Review the supporting evidence and workflow trace here.</p><div>${(artifact.citations || []).map(c => `<span class="citation">${escapeHtml(citeLabel(c))}</span>`).join(" ")}</div>${(artifact.critic_feedback || []).slice(0,4).map(item => `<div class="evidence">${escapeHtml(typeof item === "string" ? item : JSON.stringify(item))}</div>`).join("")}</div>`;
     if (artifact.kind === "comparison") return `<div class="agent-result"><span class="eyebrow">COMPARISON</span><h3>${escapeHtml(artifact.question)}</h3>${(artifact.paper_findings || []).map(f => `<div class="finding"><strong>${escapeHtml(f.title || "Paper")}</strong><p>${escapeHtml(f.summary)}</p></div>`).join("")}</div>`;
+    if (artifact.kind === "code_assist") return `<div class="agent-result"><span class="eyebrow">CODE · ${escapeHtml(artifact.language || "text")}</span><h3>${escapeHtml(artifact.task || "Coding assistance")}</h3><div class="markdown-body">${markdownHtml(artifact.answer || "")}</div><p class="artifact-summary">Text-only analysis · code was not executed.</p></div>`;
     if (artifact.kind === "plot") return plotArtifactHtml(artifact);
     if (artifact.kind === "math" || artifact.kind === "math_analysis" || artifact.kind === "formula") {
       const expression = artifact.latex || artifact.expression || artifact.formula || artifact.content || "";
-      return `<div class="agent-result"><span class="eyebrow">MATH</span><h3>${escapeHtml(artifact.title || "Formula")}</h3><div class="markdown-body">${markdownHtml(`$$${expression}$$`)}</div>${artifact.explanation ? `<p>${escapeHtml(artifact.explanation)}</p>` : ""}</div>`;
+      return `<div class="agent-result"><span class="eyebrow">MATH</span><h3>${escapeHtml(artifact.title || "Formula")}</h3><div class="markdown-body">${markdownHtml(expression.match(/^\s*(\$\$|\\\[)/) ? expression : `$$${expression}$$`)}</div>${artifact.explanation ? `<p>${escapeHtml(artifact.explanation)}</p>` : ""}</div>`;
     }
     return `<div class="agent-result"><pre>${escapeHtml(JSON.stringify(artifact,null,2))}</pre></div>`;
   }).join("");
@@ -337,14 +478,16 @@ async function askAgent(question) {
         if (event.conversation_id) localStorage.setItem(AGENT_CONVERSATION_KEY, event.conversation_id);
         state.agentArtifacts.push(...(event.artifacts || []));
         state.agentTrace.push(...(event.tool_calls || []));
-        if (!streamed) renderMarkdown(content, event.answer || "");
+        // The completed server answer is authoritative. Streaming can include
+        // partial text, but must never override the validated final response.
+        renderMarkdown(content, event.answer || streamed || "");
         status.remove();
-        $(".stream-cursor", content)?.remove();
         const citations = (event.citations || []).map(c => `<span class="citation">${escapeHtml(citeLabel(c))}</span>`).join(" ");
         if (citations) pending.insertAdjacentHTML("beforeend", `<div>${citations}</div>`);
         if (event.grounded) pending.insertAdjacentHTML("beforeend", `<div class="grounded-note">✓ Grounded in retrieved evidence</div>`);
         state.agentLiveTool = null;
         renderAgentArtifacts(); renderAgentTrace();
+        loadAgentSessions().catch(() => {});
       }
     });
   } catch(e) {
@@ -372,6 +515,50 @@ function appendAgentMessage(text, kind, attachment = null) {
   scrollMessages();
   return div;
 }
+function renderAgentSessions() {
+  const target = $("#agent-sessions");
+  target.innerHTML = state.agentSessions.length ? state.agentSessions.map(session => `
+    <button class="session-item ${session.conversation_id === state.agentConversationId ? "active" : ""}" type="button" data-agent-session="${escapeHtml(session.conversation_id)}">
+      <div><strong>${escapeHtml(session.title || "New conversation")}</strong><small>${escapeHtml(new Date(session.updated_at).toLocaleString())}</small></div>
+      <span class="session-delete" role="button" aria-label="Delete conversation" data-delete-session="${escapeHtml(session.conversation_id)}">×</span>
+    </button>`).join("") : `<div class="session-empty">Your conversations will appear here.</div>`;
+}
+async function loadAgentSessions() {
+  const result = await api("/agent/conversations?limit=100");
+  state.agentSessions = result.conversations || [];
+  renderAgentSessions();
+}
+function resetAgentConversationView() {
+  $("#agent-messages").innerHTML = `<div class="message assistant markdown-body"></div>`;
+  renderMarkdown($("#agent-messages .message"), "Hi — ask about the active paper, find related work, compare methods, or request a research report.");
+  state.agentArtifacts = [];
+  state.agentTrace = [];
+  state.agentLiveTool = null;
+  renderAgentArtifacts();
+  renderAgentTrace();
+}
+function startNewAgentConversation() {
+  state.agentConversationId = null;
+  localStorage.removeItem(AGENT_CONVERSATION_KEY);
+  resetAgentConversationView();
+  renderAgentSessions();
+  $("#agent-live-status").textContent = "New conversation";
+  $("#agent-question").focus();
+}
+async function selectAgentConversation(conversationId) {
+  if (state.agentActive || !conversationId) return;
+  state.agentConversationId = conversationId;
+  localStorage.setItem(AGENT_CONVERSATION_KEY, conversationId);
+  resetAgentConversationView();
+  renderAgentSessions();
+  await restoreAgentConversation();
+}
+async function deleteAgentConversation(conversationId) {
+  await api(`/agent/conversations/${encodeURIComponent(conversationId)}`, { method: "DELETE" });
+  state.agentSessions = state.agentSessions.filter(item => item.conversation_id !== conversationId);
+  if (state.agentConversationId === conversationId) startNewAgentConversation();
+  renderAgentSessions();
+}
 async function restoreAgentConversation() {
   if (!state.agentConversationId) return;
   try {
@@ -386,14 +573,65 @@ async function restoreAgentConversation() {
     });
     scrollMessages(target, "auto");
     $("#agent-live-status").textContent = "Conversation restored";
+    renderAgentSessions();
   } catch (error) {
     if (error.status === 404) {
       state.agentConversationId = null;
       localStorage.removeItem(AGENT_CONVERSATION_KEY);
+      renderAgentSessions();
       return;
     }
     toast(`Could not restore conversation: ${error.message}`, "error");
   }
+}
+function saveIngestionJobs() {
+  localStorage.setItem(INGESTION_JOBS_KEY, JSON.stringify(state.ingestionJobs));
+}
+function trackIngestionJob(jobId, paperId, filename = "") {
+  if (!jobId) return;
+  state.ingestionJobs[jobId] = { paperId, filename, startedAt: Date.now() };
+  saveIngestionJobs();
+  pollIngestionJob(jobId);
+}
+async function pollIngestionJob(jobId) {
+  if (activeJobPolls.has(jobId) || !state.ingestionJobs[jobId]) return;
+  activeJobPolls.add(jobId);
+  try {
+    while (state.ingestionJobs[jobId]) {
+      const job = await api(`/jobs/${encodeURIComponent(jobId)}`);
+      const percent = Math.round(Number(job.progress || 0) * 100);
+      $("#agent-upload-state").textContent = `Parsing in background · ${percent}% · safe to refresh`;
+      if (["completed", "failed"].includes(job.status)) {
+        const tracked = state.ingestionJobs[jobId];
+        delete state.ingestionJobs[jobId];
+        saveIngestionJobs();
+        await loadLibrary();
+        if (job.status === "completed") {
+          if (job.paper_id) selectPaper(job.paper_id);
+          $("#agent-upload-state").textContent = "Paper ready";
+          toast(`${tracked.filename || "Paper"} finished processing`);
+        } else {
+          $("#agent-upload-state").textContent = `Upload failed: ${job.error || "processing failed"}`;
+          toast("Background ingestion failed", "error");
+        }
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  } catch (error) {
+    if (error.status === 404) {
+      delete state.ingestionJobs[jobId];
+      saveIngestionJobs();
+    } else {
+      setTimeout(() => { activeJobPolls.delete(jobId); pollIngestionJob(jobId); }, 5000);
+      return;
+    }
+  } finally {
+    activeJobPolls.delete(jobId);
+  }
+}
+function resumeIngestionJobs() {
+  Object.keys(state.ingestionJobs).forEach(jobId => pollIngestionJob(jobId));
 }
 function clearAgentImage() {
   state.agentImage = null;
@@ -429,9 +667,15 @@ async function uploadFromAgent(file) {
   const form=new FormData(); form.append("file",file);
   try {
     const result=await api("/papers",{method:"POST",body:form});
-    $("#agent-upload-state").textContent=`Ready · ${result.pages} pages`;
-    await loadLibrary(); selectPaper(result.paper_id); renderAgentPapers();
-    toast("Paper uploaded and added to agent context");
+    if (result.status === "accepted" && result.job_id) {
+      $("#agent-upload-state").textContent="Queued for background parsing · safe to refresh";
+      trackIngestionJob(result.job_id, result.paper_id, file.name);
+      await loadLibrary();
+    } else {
+      $("#agent-upload-state").textContent=`Ready · ${result.pages} pages`;
+      await loadLibrary(); selectPaper(result.paper_id);
+      toast("Paper uploaded and added to agent context");
+    }
   } catch(e) { $("#agent-upload-state").textContent=`Upload failed: ${e.message}`; }
 }
 
@@ -481,9 +725,11 @@ async function upload() {
   op.classList.remove("hidden"); result.innerHTML=""; $("#upload-button").disabled=true; $("#upload-status").textContent="Parsing your paper…";
   const form=new FormData(); form.append("file",file);
   try {
-    const r=await api("/papers",{method:"POST",body:form}); $("#upload-status").textContent="Paper ready"; $("#upload-detail").textContent=`${r.pages} pages · ${r.text_elements} text elements · ${r.tables} tables · ${r.pictures} figures · ${r.formulas} formulas`;
+    const r=await api("/papers",{method:"POST",body:form});
+    if(r.status==="accepted"&&r.job_id){$("#upload-status").textContent="Parsing in background";$("#upload-detail").textContent="You can leave or refresh this page. Progress will resume automatically.";trackIngestionJob(r.job_id,r.paper_id,file.name);}
+    else{$("#upload-status").textContent="Paper ready";$("#upload-detail").textContent=`${r.pages} pages · ${r.text_elements} text elements · ${r.tables} tables · ${r.pictures} figures · ${r.formulas} formulas`;}
     result.innerHTML=`<div class="card result-block"><span class="status">${escapeHtml(r.status)}</span><h2>${escapeHtml(r.filename)}</h2><p>Parsing completed successfully. Open it by title — no ID to remember.</p><button class="button primary" data-open-paper="${escapeHtml(r.paper_id)}">Open in reader</button></div>`;
-    await loadLibrary(); selectPaper(r.paper_id); toast("Paper added to your library");
+    await loadLibrary(); selectPaper(r.paper_id); toast(r.status==="accepted"?"Paper queued for processing":"Paper added to your library");
   } catch(e){$("#upload-status").textContent="Upload failed";$("#upload-detail").textContent=e.message;toast(e.message,"error");}
   finally{$("#upload-button").disabled=false;}
 }
@@ -497,7 +743,14 @@ document.addEventListener("click", e => {
   const open=e.target.closest("[data-open-paper]")?.dataset.openPaper;if(open)selectPaper(open,"workspace");
   const chat=e.target.closest("[data-chat-paper]")?.dataset.chatPaper;if(chat)selectPaper(chat,"chat");
   const del=e.target.closest("[data-delete-paper]")?.dataset.deletePaper;if(del){state.deleteId=del;$("#confirm-modal").classList.remove("hidden");}
-  const prompt=e.target.closest("[data-agent-prompt]")?.dataset.agentPrompt;if(prompt){$("#agent-question").value=prompt;$("#agent-form").requestSubmit();}
+  const deleteSession=e.target.closest("[data-delete-session]")?.dataset.deleteSession;
+  if(deleteSession){e.preventDefault();e.stopPropagation();deleteAgentConversation(deleteSession).catch(error=>toast(error.message,"error"));return;}
+  const session=e.target.closest("[data-agent-session]")?.dataset.agentSession;
+  if(session){selectAgentConversation(session).catch(error=>toast(error.message,"error"));return;}
+  const prompt=e.target.closest("[data-agent-prompt]")?.dataset.agentPrompt;if(prompt){setToolsMenu(false);$("#agent-question").value=prompt;$("#agent-form").requestSubmit();}
+  const action=e.target.closest("[data-agent-action]")?.dataset.agentAction;
+  if(action){setToolsMenu(false);if(action==="upload-image")$("#agent-image-input").click();if(action==="upload-pdf")$("#agent-pdf-file").click();}
+  if(!e.target.closest(".agent-tools"))setToolsMenu(false);
 });
 $("#global-paper-select").addEventListener("change", e=>selectPaper(e.target.value));
 $("#refresh-library").addEventListener("click",()=>loadLibrary(true));
@@ -525,16 +778,22 @@ $("#agent-question").addEventListener("input",e=>{e.target.style.height="auto";e
 $("#agent-image-input").addEventListener("change",e=>selectAgentImage(e.target.files[0]));
 $("#agent-image-remove").addEventListener("click",clearAgentImage);
 $("#agent-pdf-file").addEventListener("change",e=>uploadFromAgent(e.target.files[0]));
-$("#agent-papers").addEventListener("change",e=>{if(e.target.checked){state.activePaperId=e.target.value;localStorage.setItem("paperlens.activePaper",state.activePaperId);$("#global-paper-select").value=state.activePaperId;}});
+$("#agent-tools-toggle").addEventListener("click",e=>{e.stopPropagation();setToolsMenu($("#agent-tools-menu").classList.contains("hidden"));});
+$("#agent-new-chat").addEventListener("click",startNewAgentConversation);
+document.addEventListener("keydown",e=>{if(e.key==="Escape")setToolsMenu(false);});
 $("#agent-output-tabs").addEventListener("click",e=>{if(!e.target.dataset.agentTab)return;$$('#agent-output-tabs button').forEach(b=>b.classList.toggle("active",b===e.target));const trace=e.target.dataset.agentTab==="trace";$("#agent-results").classList.toggle("hidden",trace);$("#agent-trace").classList.toggle("hidden",!trace);});
 $("#compare-button").addEventListener("click",compare);$("#discover-form").addEventListener("submit",discover);$("#research-button").addEventListener("click",research);
 $("#dropzone").addEventListener("click",()=>$("#pdf-file").click());$("#dropzone").addEventListener("dragover",e=>{e.preventDefault();$("#dropzone").classList.add("drag");});$("#dropzone").addEventListener("dragleave",()=>$("#dropzone").classList.remove("drag"));
 $("#dropzone").addEventListener("drop",e=>{e.preventDefault();$("#dropzone").classList.remove("drag");if(e.dataTransfer.files[0]){const dt=new DataTransfer();dt.items.add(e.dataTransfer.files[0]);$("#pdf-file").files=dt.files;$("#pdf-file").dispatchEvent(new Event("change"));}});
 $("#pdf-file").addEventListener("change",e=>{const f=e.target.files[0],chip=$("#file-chip");if(f){chip.textContent=`${f.name} · ${(f.size/1024/1024).toFixed(2)} MB`;chip.classList.remove("hidden");$("#upload-button").disabled=false;}});
 $("#upload-button").addEventListener("click",upload);$("#cancel-delete").addEventListener("click",()=>$("#confirm-modal").classList.add("hidden"));$("#confirm-delete").addEventListener("click",()=>state.deleteId&&deletePaper(state.deleteId));$("#mobile-menu").addEventListener("click",()=>$(".sidebar").classList.toggle("open"));
+$("#auth-form").addEventListener("submit",e=>{e.preventDefault();submitAuth("signin");});
+$("#auth-signup").addEventListener("click",()=>submitAuth("signup"));
+$("#account-button").addEventListener("click",()=>{storeAuthSession(null);state.papers=[];state.agentSessions=[];startNewAgentConversation();renderAccount();$("#auth-modal").classList.remove("hidden");});
 
 (async function init(){
   navigate(location.hash.slice(1)||"home");
-  try { await api("/health"); $("#health-dot").classList.add("ok"); $("#health-label").textContent="API connected"; await Promise.all([loadLibrary(), restoreAgentConversation()]); }
+  const authenticated = initializeAuth();
+  try { await api("/health"); $("#health-dot").classList.add("ok"); $("#health-label").textContent="API connected"; if(authenticated){await Promise.all([loadLibrary(),loadAgentSessions()]);await restoreAgentConversation();resumeIngestionJobs();} }
   catch(e){$("#health-dot").classList.add("bad");$("#health-label").textContent="API unavailable";toast(`Backend unavailable: ${e.message}`,"error");}
 })();

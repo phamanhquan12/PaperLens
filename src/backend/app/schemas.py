@@ -122,6 +122,17 @@ class IngestionResponse(BaseModel):
     job_id: str | None = None
 
 
+class JobStatusResponse(BaseModel):
+    job_id: str
+    paper_id: str | None = None
+    status: str
+    progress: float = 0.0
+    error: str | None = None
+    result: dict[str, Any] | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class PaperLibraryItem(BaseModel):
     paper_id: str
     filename: str
@@ -215,8 +226,23 @@ class AgentConversationTurn(BaseModel):
 
 class AgentConversationResponse(BaseModel):
     conversation_id: str
+    title: str | None = None
     selected_papers: list[str] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
     turns: list[AgentConversationTurn] = Field(default_factory=list)
+
+
+class AgentConversationSummary(BaseModel):
+    conversation_id: str
+    title: str
+    selected_papers: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentConversationListResponse(BaseModel):
+    conversations: list[AgentConversationSummary] = Field(default_factory=list)
 
 
 class PaperMetadataResponse(BaseModel):
@@ -238,6 +264,7 @@ class AssetManifest(BaseModel):
 
 
 class EnrichRequest(BaseModel):
+    scope: Literal["visual", "text", "both"] = "visual"
     element_types: list[Literal["figure", "table", "formula"]] = Field(
         default_factory=lambda: ["formula"]
     )
@@ -259,6 +286,7 @@ class EnrichResponse(BaseModel):
     luna_enabled: bool
     allow_external_api: bool
     results: list[EnrichResultItem] = Field(default_factory=list)
+    text_results: list[dict[str, Any]] = Field(default_factory=list)
     message: str | None = None
 
 

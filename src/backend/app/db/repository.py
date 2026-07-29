@@ -31,11 +31,13 @@ class PaperRepository:
         storage_uri: str | None,
         status: str = "processing",
         parse_status: str | None = "queued",
+        user_id: str = "local-user",
     ) -> Paper:
         paper = self.session.get(Paper, paper_id)
         if paper is None:
             paper = Paper(
                 id=paper_id,
+                user_id=user_id,
                 filename=filename,
                 storage_uri=storage_uri,
                 status=status,
@@ -43,6 +45,8 @@ class PaperRepository:
             )
             self.session.add(paper)
         else:
+            if paper.user_id != user_id:
+                raise ValueError("Paper belongs to another account")
             paper.filename = filename
             paper.storage_uri = storage_uri
             paper.status = status
@@ -78,12 +82,20 @@ class PaperRepository:
         self.session.flush()
         return job
 
-    def replace_document_graph(self, paper_doc: PaperDocument, artifacts: ArtifactPaths) -> Paper:
+    def replace_document_graph(
+        self,
+        paper_doc: PaperDocument,
+        artifacts: ArtifactPaths,
+        *,
+        user_id: str = "local-user",
+    ) -> Paper:
         """Replace sections/elements/visuals for a paper from normalized document."""
         paper = self.session.get(Paper, paper_doc.paper_id)
         if paper is None:
-            paper = Paper(id=paper_doc.paper_id, filename=paper_doc.filename)
+            paper = Paper(id=paper_doc.paper_id, filename=paper_doc.filename, user_id=user_id)
             self.session.add(paper)
+        elif paper.user_id != user_id:
+            raise ValueError("Paper belongs to another account")
 
         paper.filename = paper_doc.filename
         paper.title = paper_doc.title
@@ -191,6 +203,7 @@ class PaperRepository:
         artifacts: ArtifactPaths,
         warnings: list[str],
         page_count: int = 0,
+        user_id: str = "local-user",
     ) -> Paper:
         paper = self.upsert_pending_paper(
             paper_id=paper_id,
@@ -198,6 +211,7 @@ class PaperRepository:
             storage_uri=storage_uri,
             status=status,
             parse_status=parse_status,
+            user_id=user_id,
         )
         paper.error = error
         paper.artifacts = artifacts.model_dump()
@@ -207,7 +221,7 @@ class PaperRepository:
         self.session.flush()
         return paper
 
-    def get_paper(self, paper_id: str) -> Paper | None:
+    def get_paper(self, paper_id: str, *, user_id: str | None = None) -> Paper | None:
         stmt: Select[tuple[Paper]] = (
             select(Paper)
             .where(Paper.id == paper_id)
@@ -217,6 +231,8 @@ class PaperRepository:
                 selectinload(Paper.jobs),
             )
         )
+        if user_id is not None:
+            stmt = stmt.where(Paper.user_id == user_id)
         return self.session.scalar(stmt)
 
     def list_papers(
@@ -228,8 +244,11 @@ class PaperRepository:
         year: int | None = None,
         limit: int = 50,
         offset: int = 0,
+        user_id: str | None = None,
     ) -> list[Paper]:
         stmt = select(Paper).order_by(Paper.created_at.desc())
+        if user_id is not None:
+            stmt = stmt.where(Paper.user_id == user_id)
         if status:
             stmt = stmt.where(Paper.status == status)
         if year is not None:
@@ -251,8 +270,8 @@ class PaperRepository:
                 or (p.title and author_l in p.title.lower())
             ]
         return papers[offset : offset + limit]
-    def delete_paper(self, paper_id: str) -> bool:
-        paper = self.session.get(Paper, paper_id)
+    def delete_paper(self, paper_id: str, *, user_id: str | None = None) -> bool:
+        paper = self.get_paper(paper_id, user_id=user_id)
         if paper is None:
             return False
         self.session.delete(paper)

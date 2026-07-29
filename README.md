@@ -41,6 +41,23 @@ Copy-Item .env.example .env
 
 Fill the provider and database values in `.env`. Never commit `.env`.
 
+### Optional account mode
+
+PaperLens supports Supabase email/password authentication with server-enforced
+paper and conversation ownership. Run `src/backend/migrations/002_accounts_and_sessions.sql`
+against an existing database before enabling it, then configure:
+
+```text
+AUTH_ENABLED=true
+SUPABASE_AUTH_URL=https://YOUR_PROJECT.supabase.co
+SUPABASE_JWT_SECRET=...
+SUPABASE_ANON_KEY=...
+```
+
+`SUPABASE_ANON_KEY` is injected only into the frontend container; the JWT secret
+belongs only on the API. Existing pre-v0.2 rows remain assigned to `local-user`
+and must be reassigned or removed before production account mode is enabled.
+
 ## Run locally
 
 Backend:
@@ -96,6 +113,14 @@ root:
 
 ```powershell
 python src\ops\deploy_cloud_run.py both --gpu
+```
+
+After the account migration and JWT secret are ready, enable account mode with:
+
+```powershell
+python src\ops\deploy_cloud_run.py both --gpu --enable-auth `
+  --supabase-auth-url "https://YOUR_PROJECT.supabase.co" `
+  --supabase-anon-key "$env:SUPABASE_ANON_KEY"
 ```
 
 Required secrets are expected in Google Secret Manager. The helper scripts under

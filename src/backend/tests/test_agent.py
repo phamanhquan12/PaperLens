@@ -9,13 +9,14 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 from app.agent import (
     _deserialize_message,
     _serialize_message,
     get_agent_conversation,
     run_agent,
+    stream_agent,
 )
 from app.config import Settings, get_settings
 from app.db.agent_repository import AgentConversationRepository
@@ -326,3 +327,45 @@ def test_tool_message_roundtrip_preserves_artifact():
     assert isinstance(restored, ToolMessage)
     assert restored.name == "plot_function"
     assert restored.artifact["kind"] == "plot"
+
+
+def test_stream_agent_filters_nested_tool_model_tokens(
+    agent_settings: Settings, monkeypatch
+):
+    class FakeGraph:
+        def stream(self, inputs, stream_mode):
+            yield (
+                "messages",
+                (
+                    AIMessageChunk(content='{"answer":"nested structured output"}'),
+                    {"langgraph_node": "tools"},
+                ),
+            )
+            yield (
+                "messages",
+                (
+                    AIMessageChunk(content="Clean final answer"),
+                    {"langgraph_node": "model"},
+                ),
+            )
+            yield (
+                "values",
+                {
+                    "messages": [
+                        *inputs["messages"],
+                        AIMessage(content="Clean final answer"),
+                    ]
+                },
+            )
+
+    monkeypatch.setattr("app.agent._create_graph", lambda settings, selected: FakeGraph())
+    events = list(
+        stream_agent(
+            "question",
+            conversation_id="stream-filter",
+            settings=agent_settings,
+        )
+    )
+    tokens = [event["content"] for event in events if event["type"] == "token"]
+    assert tokens == ["Clean final answer"]
+    assert "nested structured output" not in json.dumps(events)

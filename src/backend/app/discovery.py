@@ -242,6 +242,7 @@ def find_library_duplicates(
     candidate: DiscoveryPaper,
     *,
     settings: Settings | None = None,
+    user_id: str | None = None,
 ) -> list[str]:
     """Return paper IDs that match DOI/arXiv/title."""
     from sqlalchemy import select
@@ -251,7 +252,10 @@ def find_library_duplicates(
     cfg = settings or get_settings()
     matches: list[str] = []
     with session_scope(cfg) as session:
-        rows = list(session.scalars(select(Paper)))
+        stmt = select(Paper)
+        if user_id is not None:
+            stmt = stmt.where(Paper.user_id == user_id)
+        rows = list(session.scalars(stmt))
         for row in rows:
             if candidate.doi and row.doi and candidate.doi.lower() == row.doi.lower():
                 matches.append(row.id)

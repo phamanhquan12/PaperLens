@@ -39,6 +39,7 @@
           </select>
         </div>
         <button class="button ghost small" id="refresh-library">Refresh</button>
+        <button class="account-button hidden" id="account-button" type="button" title="Account"><span id="account-avatar">A</span><span id="account-label">Account</span></button>
       </header>
 
       <div id="toast-region" aria-live="polite"></div>
@@ -82,13 +83,11 @@
         <div class="page-title"><div><span class="eyebrow">LANGGRAPH RESEARCH AGENT</span><h1>Research workspace</h1><p>Upload, read, search, compare, and synthesize through one tool-using conversation.</p></div></div>
         <div class="agent-layout">
           <aside class="agent-context card">
-            <span class="eyebrow">CONTEXT</span>
-            <h3>Selected papers</h3>
-            <div id="agent-papers" class="check-list"></div>
-            <label class="button secondary wide agent-upload-label">↑ Upload PDF<input id="agent-pdf-file" type="file" accept=".pdf,application/pdf" hidden></label>
-            <div id="agent-upload-state" class="agent-upload-state"></div>
-            <h3>Available tools</h3>
-            <div class="tool-chips"><span>Reader</span><span>Paper QA</span><span>arXiv</span><span>OpenAlex</span><span>Compare</span><span>Research</span><span>Math</span><span>Plot</span></div>
+            <div class="session-heading">
+              <div><span class="eyebrow">CONVERSATIONS</span><h3>Chat sessions</h3></div>
+              <button class="icon-button" id="agent-new-chat" type="button" title="Start a new chat" aria-label="Start a new chat">＋</button>
+            </div>
+            <div id="agent-sessions" class="session-list"><div class="session-empty">Your conversations will appear here.</div></div>
           </aside>
           <div class="agent-chat card">
             <div class="agent-chat-header">
@@ -98,24 +97,32 @@
             <div class="messages" id="agent-messages" aria-live="polite" aria-relevant="additions text">
               <div class="message assistant">Hi — ask about a selected paper, find related work, compare methods, or request a research report.</div>
             </div>
-            <div class="suggestions">
-              <button data-agent-prompt="Summarize the selected paper's contribution.">Summarize this paper</button>
-              <button data-agent-prompt="Find recent related papers on this topic.">Discover related work</button>
-              <button data-agent-prompt="Run a research workflow comparing the selected papers.">Compare and research</button>
-            </div>
             <div class="attachment-preview hidden" id="agent-image-preview">
               <img id="agent-image-thumbnail" alt="Image attachment preview">
               <div><strong id="agent-image-name"></strong><small id="agent-image-size"></small></div>
               <button type="button" id="agent-image-remove" aria-label="Remove image attachment">×</button>
             </div>
             <form class="composer agent-composer" id="agent-form">
-              <label class="attachment-button" for="agent-image-input" title="Attach PNG, JPEG, or WebP">
-                <span aria-hidden="true">＋</span><span class="sr-only">Attach image</span>
+              <div class="agent-tools">
+                <button class="attachment-button" id="agent-tools-toggle" type="button" title="Open tools" aria-label="Open tools" aria-expanded="false" aria-controls="agent-tools-menu">＋</button>
+                <div class="tools-menu hidden" id="agent-tools-menu" role="menu">
+                  <button type="button" data-agent-action="upload-image" role="menuitem"><span>▧</span><div><strong>Attach image</strong><small>PNG, JPEG, or WebP</small></div></button>
+                  <button type="button" data-agent-action="upload-pdf" role="menuitem"><span>↑</span><div><strong>Upload paper</strong><small>Parse a PDF with Docling</small></div></button>
+                  <hr>
+                  <button type="button" data-agent-prompt="Summarize the active paper's contribution with citations." role="menuitem"><span>≡</span><div><strong>Summarize</strong><small>Use the active paper</small></div></button>
+                  <button type="button" data-agent-prompt="Find recent related papers on this topic." role="menuitem"><span>⌕</span><div><strong>Discover research</strong><small>Search scholarly sources</small></div></button>
+                  <button type="button" data-agent-prompt="Compare the active paper with relevant papers in my library." role="menuitem"><span>⇄</span><div><strong>Compare</strong><small>Contrast methods and evidence</small></div></button>
+                  <button type="button" data-agent-prompt="Run a deep research workflow for my question using verified evidence." role="menuitem"><span>✦</span><div><strong>Deep research</strong><small>Plan, retrieve, and verify</small></div></button>
+                  <button type="button" data-agent-prompt="Help me analyze, explain, debug, or write code. Ask what language and task I need." role="menuitem"><span>&lt;/&gt;</span><div><strong>Coding assistant</strong><small>Text-only, no code execution</small></div></button>
+                  <button type="button" data-agent-prompt="Help me analyze a mathematical expression or create a plot." role="menuitem"><span>∑</span><div><strong>Math and plot</strong><small>Symbolic analysis and charts</small></div></button>
+                </div>
                 <input id="agent-image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-              </label>
+                <input id="agent-pdf-file" type="file" accept=".pdf,application/pdf" hidden>
+              </div>
               <textarea id="agent-question" rows="2" placeholder="Ask anything about your research…" aria-label="Message PaperLens"></textarea>
               <button class="button primary" id="agent-send" type="submit"><span>Send</span> →</button>
             </form>
+            <div id="agent-upload-state" class="agent-upload-state composer-upload-state"></div>
             <small class="composer-hint">Enter to send · Shift+Enter for a new line</small>
           </div>
           <aside class="agent-output card">
@@ -209,6 +216,18 @@
     </main>
   </div>
   <div class="modal-backdrop hidden" id="confirm-modal"><div class="modal"><h2>Delete this paper?</h2><p>This removes its database records and stored artifacts. This cannot be undone.</p><div><button class="button ghost" id="cancel-delete">Cancel</button><button class="button danger" id="confirm-delete">Delete paper</button></div></div></div>
+  <div class="modal-backdrop hidden" id="auth-modal">
+    <form class="modal auth-modal" id="auth-form">
+      <span class="brand-mark">P</span>
+      <h2>Sign in to PaperLens</h2>
+      <p>Your papers and research sessions are private to your account.</p>
+      <label>Email<input id="auth-email" type="email" autocomplete="email" required></label>
+      <label>Password<input id="auth-password" type="password" autocomplete="current-password" minlength="6" required></label>
+      <div id="auth-error" class="auth-error"></div>
+      <button class="button primary wide" type="submit">Sign in</button>
+      <button class="button ghost wide" id="auth-signup" type="button">Create account</button>
+    </form>
+  </div>
   <script src="/config.js"></script>
   <script src="/vendor/marked/marked.umd.js"></script>
   <script src="/vendor/dompurify/purify.min.js"></script>

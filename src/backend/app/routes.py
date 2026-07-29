@@ -11,12 +11,16 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Qu
 from fastapi.responses import StreamingResponse
 
 from app.config import Settings, get_settings
+from app.auth import CurrentUser, current_user
+from app.db.agent_repository import AgentConversationRepository
 from app.db.repository import PaperRepository
 from app.db.session import session_scope
 from app.luna import LunaClient, LunaDisabledError
 from app.pipeline import IngestionError, ingest_pdf_bytes
 from app.schemas import (
     AgentConversationResponse,
+    AgentConversationListResponse,
+    AgentConversationSummary,
     AgentConversationTurn,
     AgentRequest,
     AgentResponse,
@@ -31,6 +35,7 @@ from app.schemas import (
     HealthResponse,
     IndexRequest,
     IngestionResponse,
+    JobStatusResponse,
     PaperDocument,
     PaperLibraryItem,
     PaperLibraryResponse,
@@ -49,6 +54,7 @@ from app.guardrails import GuardrailError, validate_agent_input
 from app.qa import answer_paper_question
 from app.research_graph import run_research
 from app.retrieval import retrieve
+from app.text_enrichment import enrich_cleaned_text
 
 from app.storage import (
     ObjectNotFoundError,
@@ -88,7 +94,17 @@ def capabilities(settings: Settings = Depends(get_settings)) -> dict[str, Any]:
         "research_workflow": True,
         "research_orchestrator": "langgraph",
         "unified_research_agent": True,
+        "agent_reasoning": {
+            "enabled": settings.agent_reasoning_enabled,
+            "effort": settings.agent_reasoning_effort,
+            "transport": "responses_api",
+            "private_chain_of_thought_exposed": False,
+        },
+        "account_auth": settings.auth_enabled,
         "visual_enrichment": settings.luna_enabled and settings.allow_external_api,
+        "text_enrichment": (
+            settings.text_enrichment_enabled and settings.allow_external_api
+        ),
         "embedding_provider": settings.embedding_provider,
         "docling_accelerator": accelerator_status(
             settings.docling_accelerator_device
@@ -105,11 +121,18 @@ def list_papers(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     settings: Settings = Depends(get_settings),
+    user: CurrentUser = Depends(current_user),
 ) -> PaperLibraryResponse:
     with session_scope(settings) as session:
         repo = PaperRepository(session)
         papers = repo.list_papers(
-            q=q, status=status, author=author, year=year, limit=limit, offset=offset
+            q=q,
+            status=status,
+            author=author,
+            year=year,
+            limit=limit,
+            offset=offset,
+            user_id=user.user_id,
         )
         items = [
             PaperLibraryItem(
@@ -136,6 +159,7 @@ async def upload_paper(
     file: UploadFile = File(...),
     settings: Settings = Depends(get_settings),
     storage: StorageBackend = Depends(storage_dep),
+    user: CurrentUser = Depends(current_user),
 ) -> IngestionResponse:
     filename = file.filename or ""
     data = await file.read()
@@ -173,6 +197,7 @@ async def upload_paper(
                     storage_uri=raw_key,
                     status="accepted",
                     parse_status="queued",
+                    user_id=user.user_id,
                 )
                 job = repo.create_job(paper_id=paper_id, job_type="ingest", status="queued")
                 job_id = job.id
@@ -186,6 +211,8 @@ async def upload_paper(
             settings=settings,
             storage=storage,
             paper_id=paper_id,
+            user_id=user.user_id,
+            job_id=job_id,
         )
         return IngestionResponse(
             paper_id=paper_id,
@@ -197,7 +224,14 @@ async def upload_paper(
         )
 
     try:
-        return ingest_pdf_bytes(data, filename=filename, settings=settings, storage=storage)
+        ingest_kwargs = {
+            "filename": filename,
+            "settings": settings,
+            "storage": storage,
+        }
+        if settings.auth_enabled:
+            ingest_kwargs["user_id"] = user.user_id
+        return ingest_pdf_bytes(data, **ingest_kwargs)
     except IngestionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -205,26 +239,65 @@ async def upload_paper(
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
 
 
-def _load_meta(storage: StorageBackend, paper_id: str) -> dict[str, Any]:
+@router.get("/jobs/{job_id}", response_model=JobStatusResponse)
+def get_job_status(
+    job_id: str,
+    settings: Settings = Depends(get_settings),
+    user: CurrentUser = Depends(current_user),
+) -> JobStatusResponse:
+    from sqlalchemy import select
+    from app.db.models import Job, Paper
+
+    with session_scope(settings) as session:
+        stmt = (
+            select(Job)
+            .join(Paper, Paper.id == Job.paper_id)
+            .where(Job.id == job_id, Paper.user_id == user.user_id)
+        )
+        job = session.scalar(stmt)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return JobStatusResponse(
+            job_id=job.id,
+            paper_id=job.paper_id,
+            status=job.status,
+            progress=job.progress,
+            error=job.error,
+            result=job.result,
+            created_at=job.created_at,
+            updated_at=job.updated_at,
+        )
+
+
+def _load_meta(
+    storage: StorageBackend,
+    paper_id: str,
+    *,
+    user_id: str = "local-user",
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    cfg = settings or get_settings()
+    with session_scope(cfg) as session:
+        paper = PaperRepository(session).get_paper(paper_id, user_id=user_id)
+        if paper is None and cfg.auth_enabled:
+            raise HTTPException(status_code=404, detail=f"Unknown paper_id: {paper_id}")
+        paper_snapshot = None if paper is None else {
+            "paper_id": paper.id,
+            "filename": paper.filename,
+            "status": paper.status,
+            "parse_status": paper.parse_status,
+            "pages": paper.page_count,
+            "created_at": paper.created_at.isoformat() if paper.created_at else None,
+            "artifacts": paper.artifacts or {},
+            "warnings": paper.warnings or [],
+            "title": paper.title,
+        }
     key = paper_meta_key(paper_id)
     if not storage.exists(key):
         # Fallback to DB library record
-        settings = get_settings()
-        with session_scope(settings) as session:
-            paper = PaperRepository(session).get_paper(paper_id)
-            if paper is None:
-                raise HTTPException(status_code=404, detail=f"Unknown paper_id: {paper_id}")
-            return {
-                "paper_id": paper.id,
-                "filename": paper.filename,
-                "status": paper.status,
-                "parse_status": paper.parse_status,
-                "pages": paper.page_count,
-                "created_at": paper.created_at.isoformat() if paper.created_at else None,
-                "artifacts": paper.artifacts or {},
-                "warnings": paper.warnings or [],
-                "title": paper.title,
-            }
+        if paper_snapshot is None:
+            raise HTTPException(status_code=404, detail=f"Unknown paper_id: {paper_id}")
+        return paper_snapshot
     try:
         return storage.read_json(key)
     except ObjectNotFoundError as exc:
@@ -235,8 +308,9 @@ def _load_meta(storage: StorageBackend, paper_id: str) -> dict[str, Any]:
 def get_paper(
     paper_id: str,
     storage: StorageBackend = Depends(storage_dep),
+    user: CurrentUser = Depends(current_user),
 ) -> PaperMetadataResponse:
-    meta = _load_meta(storage, paper_id)
+    meta = _load_meta(storage, paper_id, user_id=user.user_id)
     artifacts = meta.get("artifacts") or {}
     return PaperMetadataResponse(
         paper_id=meta["paper_id"],
@@ -256,7 +330,9 @@ def delete_paper(
     paper_id: str,
     settings: Settings = Depends(get_settings),
     storage: StorageBackend = Depends(storage_dep),
+    user: CurrentUser = Depends(current_user),
 ) -> DeletePaperResponse:
+    _load_meta(storage, paper_id, user_id=user.user_id, settings=settings)
     deleted_objects = 0
     prefixes = [
         f"raw/papers/{paper_id}/",
@@ -271,7 +347,7 @@ def delete_paper(
             deleted_objects += 1
 
     with session_scope(settings) as session:
-        ok = PaperRepository(session).delete_paper(paper_id)
+        ok = PaperRepository(session).delete_paper(paper_id, user_id=user.user_id)
 
     if not ok and deleted_objects == 0:
         raise HTTPException(status_code=404, detail=f"Unknown paper_id: {paper_id}")
@@ -286,8 +362,9 @@ def delete_paper(
 def get_document(
     paper_id: str,
     storage: StorageBackend = Depends(storage_dep),
+    user: CurrentUser = Depends(current_user),
 ) -> PaperDocument:
-    _load_meta(storage, paper_id)
+    _load_meta(storage, paper_id, user_id=user.user_id)
     key = paper_normalized_key(paper_id, "paper_document.json")
     if not storage.exists(key):
         raise HTTPException(status_code=404, detail="paper_document.json not found")
@@ -302,8 +379,9 @@ def get_elements(
     section: str | None = None,
     kept_only: bool = True,
     storage: StorageBackend = Depends(storage_dep),
+    user: CurrentUser = Depends(current_user),
 ) -> dict[str, Any]:
-    _load_meta(storage, paper_id)
+    _load_meta(storage, paper_id, user_id=user.user_id)
     if kept_only:
         key = paper_normalized_key(paper_id, "cleaned_text.jsonl")
         if not storage.exists(key):
@@ -317,7 +395,7 @@ def get_elements(
 
             elements.append(json.loads(line))
     else:
-        doc = get_document(paper_id, storage)
+        doc = get_document(paper_id, storage, user)
         elements = [el.model_dump(mode="json") for el in doc.text_elements]
 
     filtered: list[dict[str, Any]] = []
@@ -339,12 +417,13 @@ def get_elements(
 def get_assets(
     paper_id: str,
     storage: StorageBackend = Depends(storage_dep),
+    user: CurrentUser = Depends(current_user),
 ) -> AssetManifest:
-    _load_meta(storage, paper_id)
+    _load_meta(storage, paper_id, user_id=user.user_id)
     key = paper_normalized_key(paper_id, "assets_manifest.json")
     if storage.exists(key):
         return AssetManifest.model_validate(storage.read_json(key))
-    doc = get_document(paper_id, storage)
+    doc = get_document(paper_id, storage, user)
     return AssetManifest(tables=doc.tables, figures=doc.figures, formulas=doc.formulas)
 
 
@@ -354,9 +433,10 @@ def get_asset_content(
     asset_type: str,
     element_id: str,
     storage: StorageBackend = Depends(storage_dep),
+    user: CurrentUser = Depends(current_user),
 ) -> Response:
     """Return a private visual asset through the API for browser display."""
-    manifest = get_assets(paper_id, storage)
+    manifest = get_assets(paper_id, storage, user)
     buckets = {
         "table": manifest.tables,
         "figure": manifest.figures,
@@ -382,8 +462,9 @@ def index_paper(
     body: IndexRequest | None = None,
     settings: Settings = Depends(get_settings),
     storage: StorageBackend = Depends(storage_dep),
+    user: CurrentUser = Depends(current_user),
 ) -> dict[str, Any]:
-    _load_meta(storage, paper_id)
+    _load_meta(storage, paper_id, user_id=user.user_id, settings=settings)
     force = body.force if body else False
     return index_paper_chunks(paper_id, settings=settings, force=force)
 
@@ -392,13 +473,19 @@ def index_paper(
 def retrieve_endpoint(
     body: RetrieveRequest,
     settings: Settings = Depends(get_settings),
+    user: CurrentUser = Depends(current_user),
 ) -> dict[str, Any]:
+    if body.paper_id:
+        with session_scope(settings) as session:
+            if PaperRepository(session).get_paper(body.paper_id, user_id=user.user_id) is None:
+                raise HTTPException(status_code=404, detail="Paper not found")
     return retrieve(
         body.query,
         paper_id=body.paper_id,
         settings=settings,
         top_k=body.top_k or settings.retrieval_top_k,
         use_mmr=body.use_mmr or settings.retrieval_use_mmr,
+        user_id=user.user_id,
     )
 
 
@@ -407,8 +494,9 @@ def list_chunks(
     paper_id: str,
     settings: Settings = Depends(get_settings),
     storage: StorageBackend = Depends(storage_dep),
+    user: CurrentUser = Depends(current_user),
 ) -> dict[str, Any]:
-    _load_meta(storage, paper_id)
+    _load_meta(storage, paper_id, user_id=user.user_id, settings=settings)
     from sqlalchemy import select
     from app.db.models import PaperChunk
 
@@ -441,8 +529,9 @@ def paper_qa(
     body: QARequest,
     settings: Settings = Depends(get_settings),
     storage: StorageBackend = Depends(storage_dep),
+    user: CurrentUser = Depends(current_user),
 ) -> dict[str, Any]:
-    _load_meta(storage, paper_id)
+    _load_meta(storage, paper_id, user_id=user.user_id, settings=settings)
     answer, state = answer_paper_question(
         paper_id=paper_id,
         question=body.question,
@@ -463,6 +552,7 @@ def discover_endpoint(
     body: DiscoverRequest,
     settings: Settings = Depends(get_settings),
     storage: StorageBackend = Depends(storage_dep),
+    user: CurrentUser = Depends(current_user),
 ) -> dict[str, Any]:
     try:
         result = discover_papers(
@@ -482,7 +572,9 @@ def discover_endpoint(
         from app.discovery import DiscoveryPaper
 
         paper = DiscoveryPaper.model_validate(item)
-        item["library_matches"] = find_library_duplicates(paper, settings=settings)
+        item["library_matches"] = find_library_duplicates(
+            paper, settings=settings, user_id=user.user_id
+        )
     return payload
 
 
@@ -491,12 +583,13 @@ def compare_endpoint(
     body: CompareRequest,
     settings: Settings = Depends(get_settings),
     storage: StorageBackend = Depends(storage_dep),
+    user: CurrentUser = Depends(current_user),
 ) -> dict[str, Any]:
     if len(body.paper_ids) < 2:
         raise HTTPException(status_code=400, detail="At least two paper_ids required")
     titles: dict[str, str | None] = {}
     for pid in body.paper_ids:
-        meta = _load_meta(storage, pid)
+        meta = _load_meta(storage, pid, user_id=user.user_id, settings=settings)
         titles[pid] = meta.get("title")
     try:
         result = compare_papers(
@@ -515,13 +608,20 @@ def compare_endpoint(
 def research_endpoint(
     body: ResearchRequest,
     settings: Settings = Depends(get_settings),
+    user: CurrentUser = Depends(current_user),
 ) -> dict[str, Any]:
+    with session_scope(settings) as session:
+        repo = PaperRepository(session)
+        for paper_id in body.selected_papers or []:
+            if repo.get_paper(paper_id, user_id=user.user_id) is None:
+                raise HTTPException(status_code=404, detail="Paper not found")
     report = run_research(
         body.research_question,
         selected_papers=body.selected_papers,
         settings=settings,
         enable_external=body.enable_external,
         max_external_searches=body.max_external_searches,
+        user_id=user.user_id,
     )
     return report.model_dump(mode="json")
 
@@ -530,6 +630,7 @@ def research_endpoint(
 def agent_endpoint(
     body: AgentRequest,
     settings: Settings = Depends(get_settings),
+    user: CurrentUser = Depends(current_user),
 ) -> AgentResponse:
     try:
         validated = validate_agent_input(
@@ -538,14 +639,28 @@ def agent_endpoint(
             image_data_url=body.image,
             settings=settings,
         )
+        if settings.auth_enabled:
+            with session_scope(settings) as session:
+                repo = PaperRepository(session)
+                for paper_id in validated.selected_papers:
+                    if repo.get_paper(paper_id, user_id=user.user_id) is None:
+                        raise HTTPException(status_code=404, detail="Paper not found")
+                if body.conversation_id:
+                    conversation = AgentConversationRepository(session).get_with_messages(
+                        body.conversation_id, user_id=user.user_id
+                    )
+                    if conversation is None:
+                        raise HTTPException(status_code=404, detail="Conversation not found")
+        agent_kwargs = {
+            "selected_papers": validated.selected_papers,
+            "conversation_id": body.conversation_id,
+            "settings": settings,
+            "image": validated.image,
+        }
+        if settings.auth_enabled:
+            agent_kwargs["user_id"] = user.user_id
         return AgentResponse.model_validate(
-            run_agent(
-                validated.message,
-                selected_papers=validated.selected_papers,
-                conversation_id=body.conversation_id,
-                settings=settings,
-                image=validated.image,
-            )
+            run_agent(validated.message, **agent_kwargs)
         )
     except GuardrailError as exc:
         raise HTTPException(
@@ -560,6 +675,7 @@ def agent_endpoint(
 def agent_stream_endpoint(
     body: AgentRequest,
     settings: Settings = Depends(get_settings),
+    user: CurrentUser = Depends(current_user),
 ) -> StreamingResponse:
     try:
         validated = validate_agent_input(
@@ -568,6 +684,18 @@ def agent_stream_endpoint(
             image_data_url=body.image,
             settings=settings,
         )
+        if settings.auth_enabled:
+            with session_scope(settings) as session:
+                repo = PaperRepository(session)
+                for paper_id in validated.selected_papers:
+                    if repo.get_paper(paper_id, user_id=user.user_id) is None:
+                        raise HTTPException(status_code=404, detail="Paper not found")
+                if body.conversation_id:
+                    conversation = AgentConversationRepository(session).get_with_messages(
+                        body.conversation_id, user_id=user.user_id
+                    )
+                    if conversation is None:
+                        raise HTTPException(status_code=404, detail="Conversation not found")
     except GuardrailError as exc:
         raise HTTPException(
             status_code=400,
@@ -576,13 +704,15 @@ def agent_stream_endpoint(
 
     def events():
         try:
-            for event in stream_agent(
-                validated.message,
-                selected_papers=validated.selected_papers,
-                conversation_id=body.conversation_id,
-                settings=settings,
-                image=validated.image,
-            ):
+            agent_kwargs = {
+                "selected_papers": validated.selected_papers,
+                "conversation_id": body.conversation_id,
+                "settings": settings,
+                "image": validated.image,
+            }
+            if settings.auth_enabled:
+                agent_kwargs["user_id"] = user.user_id
+            for event in stream_agent(validated.message, **agent_kwargs):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except GuardrailError as exc:
             error = {
@@ -607,23 +737,70 @@ def agent_stream_endpoint(
 
 
 @router.get(
+    "/agent/conversations",
+    response_model=AgentConversationListResponse,
+)
+def list_agent_conversations_endpoint(
+    limit: int = Query(default=100, ge=1, le=200),
+    settings: Settings = Depends(get_settings),
+    user: CurrentUser = Depends(current_user),
+) -> AgentConversationListResponse:
+    with session_scope(settings) as session:
+        rows = AgentConversationRepository(session).list_for_user(
+            user.user_id, limit=limit
+        )
+        conversations = [
+            AgentConversationSummary(
+                conversation_id=row.id,
+                title=row.title or "New conversation",
+                selected_papers=list(row.selected_papers or []),
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+            )
+            for row in rows
+        ]
+    return AgentConversationListResponse(conversations=conversations)
+
+
+@router.get(
     "/agent/conversations/{conversation_id}",
     response_model=AgentConversationResponse,
 )
 def get_agent_conversation_endpoint(
     conversation_id: str,
     settings: Settings = Depends(get_settings),
+    user: CurrentUser = Depends(current_user),
 ) -> AgentConversationResponse:
-    payload = get_agent_conversation(conversation_id, settings=settings)
+    payload = get_agent_conversation(
+        conversation_id, settings=settings, user_id=user.user_id
+    )
     if payload is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return AgentConversationResponse(
         conversation_id=payload["conversation_id"],
+        title=payload.get("title"),
         selected_papers=list(payload.get("selected_papers") or []),
+        created_at=payload.get("created_at"),
+        updated_at=payload.get("updated_at"),
         turns=[
             AgentConversationTurn.model_validate(turn) for turn in payload.get("turns") or []
         ],
     )
+
+
+@router.delete("/agent/conversations/{conversation_id}", status_code=204)
+def delete_agent_conversation_endpoint(
+    conversation_id: str,
+    settings: Settings = Depends(get_settings),
+    user: CurrentUser = Depends(current_user),
+) -> Response:
+    with session_scope(settings) as session:
+        deleted = AgentConversationRepository(session).delete_for_user(
+            conversation_id, user.user_id
+        )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return Response(status_code=204)
 
 
 @router.post("/papers/{paper_id}/enrich", response_model=EnrichResponse)
@@ -632,10 +809,11 @@ def enrich_paper(
     body: EnrichRequest,
     settings: Settings = Depends(get_settings),
     storage: StorageBackend = Depends(storage_dep),
+    user: CurrentUser = Depends(current_user),
 ) -> EnrichResponse:
-    _load_meta(storage, paper_id)
+    _load_meta(storage, paper_id, user_id=user.user_id, settings=settings)
     client = LunaClient(settings=settings, storage=storage)
-    if not client.is_enabled:
+    if body.scope in {"visual", "both"} and not client.is_enabled and body.scope == "visual":
         return EnrichResponse(
             paper_id=paper_id,
             luna_enabled=settings.luna_enabled,
@@ -644,22 +822,39 @@ def enrich_paper(
             message="Luna enrichment disabled. Set LUNA_ENABLED=true and ALLOW_EXTERNAL_API=true.",
         )
 
-    manifest = get_assets(paper_id, storage)
+    manifest = get_assets(paper_id, storage, user)
     candidates: list[VisualElement] = []
-    for kind in body.element_types:
-        bucket = getattr(manifest, f"{kind}s")
-        for el in bucket:
-            if body.element_ids and el.element_id not in body.element_ids:
-                continue
-            if not body.force and kind == "formula" and not el.needs_enrichment and el.docling_text:
-                continue
-            candidates.append(el)
+    if body.scope in {"visual", "both"} and client.is_enabled:
+        for kind in body.element_types:
+            bucket = getattr(manifest, f"{kind}s")
+            for el in bucket:
+                if body.element_ids and el.element_id not in body.element_ids:
+                    continue
+                if not body.force and kind == "formula" and not el.needs_enrichment and el.docling_text:
+                    continue
+                candidates.append(el)
 
     results: list[EnrichResultItem] = []
     paper = None
     paper_key = paper_normalized_key(paper_id, "paper_document.json")
     if storage.exists(paper_key):
         paper = PaperDocument.model_validate(storage.read_json(paper_key))
+    text_results: list[dict[str, Any]] = []
+    if body.scope in {"text", "both"} and paper is not None:
+        try:
+            text_results = enrich_cleaned_text(
+                paper,
+                settings=settings,
+                storage=storage,
+                force=body.force,
+            )
+            paper.metadata["text_enrichment"] = {
+                "source": "cleaned_docling_text",
+                "sections": text_results,
+            }
+        except Exception as exc:
+            logger.exception("Cleaned text enrichment failed for %s", paper_id)
+            text_results = [{"status": "failed", "error": str(exc)}]
 
     for el in candidates:
         image_bytes = None
@@ -721,6 +916,7 @@ def enrich_paper(
         luna_enabled=settings.luna_enabled,
         allow_external_api=settings.allow_external_api,
         results=results,
+        text_results=text_results,
     )
 
 

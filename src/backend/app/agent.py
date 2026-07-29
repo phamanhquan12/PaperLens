@@ -20,6 +20,7 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
 from app.compare import compare_papers
+from app.code_tools import build_code_tools
 from app.config import Settings, get_settings
 from app.db.agent_repository import AgentConversationRepository
 from app.db.session import session_scope
@@ -49,8 +50,20 @@ def _model(settings: Settings) -> ChatOpenAI:
     }
     if settings.llm_base_url:
         kwargs["base_url"] = settings.llm_base_url
-    if "luna" in settings.llm_model.lower():
-        # Luna's Chat Completions endpoint requires non-reasoning mode for tools.
+    model_name = settings.llm_model.lower()
+    supports_reasoning = any(
+        marker in model_name for marker in ("luna", "gpt-5", "o1", "o3", "o4")
+    )
+    if settings.agent_reasoning_enabled and supports_reasoning:
+        # Tool calling with reasoning is supported through the Responses API.
+        # Request summaries only; private chain-of-thought is never exposed.
+        kwargs["use_responses_api"] = True
+        kwargs["reasoning"] = {
+            "effort": settings.agent_reasoning_effort,
+            "summary": "auto",
+        }
+    elif "luna" in model_name:
+        # Luna Chat Completions rejects function tools with reasoning enabled.
         kwargs["reasoning_effort"] = "none"
     return ChatOpenAI(**kwargs)
 
@@ -58,13 +71,21 @@ def _model(settings: Settings) -> ChatOpenAI:
 def _resolve_paper_id(requested: str, selected: list[str]) -> str:
     paper_id = requested.strip() if requested else ""
     if paper_id:
+        if paper_id not in selected:
+            raise ValueError("That paper is not in the selected account context.")
         return paper_id
     if selected:
         return selected[0]
     raise ValueError("No paper is selected. Ask the user to select or upload a paper.")
 
 
-def build_tools(settings: Settings, selected_papers: list[str]):
+def build_tools(
+    settings: Settings,
+    selected_papers: list[str],
+    *,
+    user_id: str = "local-user",
+    model: ChatOpenAI | None = None,
+):
     @tool(response_format="content_and_artifact")
     def ask_paper(question: str, paper_id: str = "") -> tuple[str, dict[str, Any]]:
         """Answer a question about one selected library paper with page citations."""
@@ -160,6 +181,7 @@ def build_tools(settings: Settings, selected_papers: list[str]):
             settings=settings,
             enable_external=True,
             max_external_searches=1,
+            user_id=user_id,
         )
         artifact = {
             "kind": "research_report",
@@ -174,14 +196,18 @@ def build_tools(settings: Settings, selected_papers: list[str]):
         compare_paper_set,
         run_research_workflow,
         *build_math_tools(),
+        *build_code_tools(model or _model(settings)),
     ]
 
 
-def _create_graph(settings: Settings, selected: list[str]):
+def _create_graph(
+    settings: Settings, selected: list[str], *, user_id: str = "local-user"
+):
     selected_context = ", ".join(selected) if selected else "none"
+    model = _model(settings)
     return create_agent(
-        _model(settings),
-        build_tools(settings, selected),
+        model,
+        build_tools(settings, selected, user_id=user_id, model=model),
         system_prompt=(
             "You are PaperLens, a friendly research assistant. Decide whether to answer "
             "conversationally or call tools. Greetings, thanks, and UI questions require no "
@@ -189,12 +215,15 @@ def _create_graph(settings: Settings, selected: list[str]):
             "call ask_paper or read_paper. For new literature, call discover_research. For "
             "multi-paper synthesis, call compare_paper_set or run_research_workflow. For "
             "symbolic math, call analyze_math. For plotting y=f(x), call plot_function "
-            "(returns points for frontend SVG — do not invent plot files). Never invent "
+            "(returns points for frontend SVG — do not invent plot files). For code explanation, "
+            "debugging, review, or generation, call assist_code; it never executes code. Never invent "
             "citations. Explain when a user must upload or select a paper. Format "
             "substantive answers as clean GitHub-flavored Markdown with short paragraphs, "
             "headings only when useful, and blank lines before lists. Use $...$ for inline "
             "math and $$...$$ for display formulas. Do not repeat a separate citation dump "
-            "after already citing claims in the answer. "
+            "after already citing claims in the answer. Reason carefully before acting, but "
+            "never reveal private chain-of-thought; provide concise conclusions and an "
+            "inspectable tool/evidence trace instead. "
             f"Currently selected paper IDs: {selected_context}."
         ),
         name="paperlens_research_agent",
@@ -318,11 +347,13 @@ def _deserialize_message(record: dict[str, Any]) -> BaseMessage:
     return HumanMessage(content=content)
 
 
-def _load_history(conversation_id: str, settings: Settings) -> list[BaseMessage]:
+def _load_history(
+    conversation_id: str, settings: Settings, *, user_id: str = "local-user"
+) -> list[BaseMessage]:
     try:
         with session_scope(settings) as session:
             repo = AgentConversationRepository(session)
-            conversation = repo.get_with_messages(conversation_id)
+            conversation = repo.get_with_messages(conversation_id, user_id=user_id)
             if conversation is None:
                 return []
             records = [
@@ -351,6 +382,7 @@ def _save_history(
     selected_papers: list[str],
     settings: Settings,
     human_image: ValidatedImage | None = None,
+    user_id: str = "local-user",
 ) -> None:
     records = [_serialize_message(m) for m in messages]
     # Attach image metadata to the latest human turn without storing bytes.
@@ -370,6 +402,7 @@ def _save_history(
                 records,
                 selected_papers=selected_papers,
                 keep_last=settings.agent_history_limit,
+                user_id=user_id,
             )
     except Exception:
         logger.exception("Failed to persist agent conversation %s", conversation_id)
@@ -437,16 +470,20 @@ def get_agent_conversation(
     conversation_id: str,
     *,
     settings: Settings | None = None,
+    user_id: str = "local-user",
 ) -> dict[str, Any] | None:
     cfg = settings or get_settings()
     with session_scope(cfg) as session:
         repo = AgentConversationRepository(session)
-        conversation = repo.get_with_messages(conversation_id)
+        conversation = repo.get_with_messages(conversation_id, user_id=user_id)
         if conversation is None:
             return None
-        turns = repo.chat_turns(conversation_id)
+        turns = repo.chat_turns(conversation_id, user_id=user_id)
         return {
             "conversation_id": conversation.id,
+            "title": conversation.title,
+            "created_at": conversation.created_at,
+            "updated_at": conversation.updated_at,
             "selected_papers": list(conversation.selected_papers or []),
             "turns": turns,
         }
@@ -459,13 +496,19 @@ def run_agent(
     conversation_id: str | None = None,
     settings: Settings | None = None,
     image: ValidatedImage | None = None,
+    user_id: str = "local-user",
 ) -> dict[str, Any]:
     cfg = settings or get_settings()
     selected = list(dict.fromkeys(selected_papers or []))
     cid = conversation_id or str(uuid4())
-    history = _load_history(cid, cfg)
+    history = _load_history(cid, cfg, user_id=user_id)
     human = _build_human_message(message, image=image)
-    output = _create_graph(cfg, selected).invoke(
+    graph = (
+        _create_graph(cfg, selected, user_id=user_id)
+        if user_id != "local-user"
+        else _create_graph(cfg, selected)
+    )
+    output = graph.invoke(
         {"messages": [*history, human]}
     )
     messages = list(output["messages"])
@@ -475,6 +518,7 @@ def run_agent(
         selected_papers=selected,
         settings=cfg,
         human_image=image,
+        user_id=user_id,
     )
     result = _collect_result(
         messages,
@@ -491,25 +535,35 @@ def stream_agent(
     conversation_id: str | None = None,
     settings: Settings | None = None,
     image: ValidatedImage | None = None,
+    user_id: str = "local-user",
 ) -> Iterator[dict[str, Any]]:
     """Yield token, tool, and final events from the native LangGraph stream."""
     cfg = settings or get_settings()
     selected = list(dict.fromkeys(selected_papers or []))
     cid = conversation_id or str(uuid4())
-    history = _load_history(cid, cfg)
+    history = _load_history(cid, cfg, user_id=user_id)
     human = _build_human_message(message, image=image)
     inputs = {"messages": [*history, human]}
     final_messages: list[BaseMessage] = []
     observed_messages = len(inputs["messages"])
 
     yield {"type": "start", "conversation_id": cid}
-    for mode, data in _create_graph(cfg, selected).stream(
+    graph = (
+        _create_graph(cfg, selected, user_id=user_id)
+        if user_id != "local-user"
+        else _create_graph(cfg, selected)
+    )
+    for mode, data in graph.stream(
         inputs,
         stream_mode=["messages", "values"],
     ):
         if mode == "messages":
-            chunk, _metadata = data
+            chunk, metadata = data
             if isinstance(chunk, AIMessageChunk):
+                # Nested LLMs inside tools (for example structured paper QA) also
+                # emit message chunks. Only root agent-model tokens belong in chat.
+                if str((metadata or {}).get("langgraph_node") or "") != "model":
+                    continue
                 text = _content_text(chunk.content)
                 if text:
                     yield {
@@ -541,6 +595,7 @@ def stream_agent(
         selected_papers=selected,
         settings=cfg,
         human_image=image,
+        user_id=user_id,
     )
     result = _collect_result(
         final_messages,
