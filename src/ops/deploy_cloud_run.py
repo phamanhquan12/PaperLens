@@ -16,6 +16,20 @@ AR_IMAGE_API = f"{REGION}-docker.pkg.dev/{PROJECT}/paperlens/api"
 AR_IMAGE_UI = f"{REGION}-docker.pkg.dev/{PROJECT}/paperlens/ui"
 
 
+def local_env() -> dict[str, str]:
+    values: dict[str, str] = {}
+    path = Path(".env")
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        values[key.strip()] = value.strip().strip("\"'")
+    return values
+
+
 def gcloud() -> str:
     local = (
         Path(os.environ.get("LOCALAPPDATA", ""))
@@ -44,6 +58,7 @@ def deploy_api(
     skip_build: bool = False,
     enable_auth: bool = False,
     auth_url: str = "",
+    jwks_url: str = "",
 ) -> int:
     image = f"{AR_IMAGE_API}:{'gpu-latest' if gpu else 'latest'}"
     dockerfile = "Dockerfile.backend.gpu" if gpu else "Dockerfile.backend"
@@ -99,7 +114,8 @@ options:
         if not auth_url:
             raise ValueError("--supabase-auth-url is required with --enable-auth")
         runtime_env += f",AUTH_ENABLED=true,SUPABASE_AUTH_URL={auth_url}"
-        runtime_secrets += ",SUPABASE_JWT_SECRET=paperlens-supabase-jwt-secret:latest"
+        if jwks_url:
+            runtime_env += f",SUPABASE_JWKS_URL={jwks_url}"
 
     deploy = [
         gcloud(),
@@ -186,12 +202,30 @@ timeout: 1800s
 
 
 def main() -> int:
+    env = local_env()
     parser = argparse.ArgumentParser()
     parser.add_argument("target", choices=["api", "ui", "both"])
     parser.add_argument("--api-url", default="")
     parser.add_argument("--enable-auth", action="store_true")
-    parser.add_argument("--supabase-auth-url", default=os.environ.get("SUPABASE_AUTH_URL", ""))
-    parser.add_argument("--supabase-anon-key", default=os.environ.get("SUPABASE_ANON_KEY", ""))
+    parser.add_argument(
+        "--supabase-auth-url",
+        default=os.environ.get("SUPABASE_AUTH_URL")
+        or os.environ.get("SUPABASE_URL")
+        or env.get("SUPABASE_AUTH_URL")
+        or env.get("SUPABASE_URL", ""),
+    )
+    parser.add_argument(
+        "--supabase-jwks-url",
+        default=os.environ.get("SUPABASE_JWKS_URL")
+        or env.get("SUPABASE_JWKS_URL", ""),
+    )
+    parser.add_argument(
+        "--supabase-anon-key",
+        default=os.environ.get("SUPABASE_PUBLISHABLE_KEY")
+        or os.environ.get("SUPABASE_ANON_KEY")
+        or env.get("SUPABASE_PUBLISHABLE_KEY")
+        or env.get("SUPABASE_ANON_KEY", ""),
+    )
     parser.add_argument(
         "--gpu",
         action="store_true",
@@ -209,6 +243,7 @@ def main() -> int:
             skip_build=args.skip_build,
             enable_auth=args.enable_auth,
             auth_url=args.supabase_auth_url,
+            jwks_url=args.supabase_jwks_url,
         )
         if code != 0:
             return code

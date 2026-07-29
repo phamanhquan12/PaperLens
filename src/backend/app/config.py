@@ -79,7 +79,11 @@ class Settings(BaseSettings):
 
     # Supabase Auth. Disabled by default so local development remains self-contained.
     auth_enabled: bool = False
-    supabase_auth_url: str | None = None
+    supabase_auth_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SUPABASE_AUTH_URL", "SUPABASE_URL"),
+    )
+    supabase_jwks_url: str | None = None
     supabase_jwt_secret: str | None = None
     supabase_jwt_audience: str = "authenticated"
     supabase_jwt_issuer: str | None = None

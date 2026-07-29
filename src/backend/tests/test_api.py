@@ -15,6 +15,8 @@ from app.storage import LocalStorage, get_storage
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     settings = Settings(
+        _env_file=None,
+        auth_enabled=False,
         app_env="development",
         storage_backend="local",
         local_storage_root=tmp_path,

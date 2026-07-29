@@ -59,8 +59,8 @@ def current_user(
     try:
         if settings.supabase_jwt_secret:
             claims = jwt.decode(token, settings.supabase_jwt_secret, **kwargs)
-        elif settings.supabase_auth_url:
-            jwks_url = (
+        elif settings.supabase_jwks_url or settings.supabase_auth_url:
+            jwks_url = settings.supabase_jwks_url or (
                 f"{settings.supabase_auth_url.rstrip('/')}"
                 "/auth/v1/.well-known/jwks.json"
             )

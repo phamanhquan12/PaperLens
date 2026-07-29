@@ -51,6 +51,26 @@ def main() -> None:
         vals[k.strip().upper()] = v.strip().strip("\"'")
 
     print("HAS_DATABASE_URL", "DATABASE_URL" in vals)
+    print("ENV_KEYS", ",".join(sorted(vals)))
+    print("AUTH_ENABLED", vals.get("AUTH_ENABLED", "MISSING").lower())
+    auth_url = vals.get("SUPABASE_AUTH_URL", "")
+    print("SUPABASE_AUTH_URL", inspect_key("SUPABASE_AUTH_URL", auth_url) if auth_url else "MISSING")
+    publishable = vals.get("SUPABASE_PUBLISHABLE_KEY") or vals.get(
+        "SUPABASE_ANON_KEY", ""
+    )
+    print(
+        "SUPABASE_PUBLISHABLE_KEY",
+        {
+            "present": bool(publishable),
+            "key_type": (
+                "publishable"
+                if publishable.startswith("sb_publishable_")
+                else "legacy_anon_or_unknown"
+            ),
+            "length": len(publishable),
+        },
+    )
+    print("SUPABASE_JWT_SECRET_PRESENT", bool(vals.get("SUPABASE_JWT_SECRET")))
     for key in ("SUPABASE_URL", "SUPABASE_BACKEND", "STORAGE_BACKEND", "GCS_BUCKET_NAME"):
         if key not in vals:
             print(key, "MISSING")

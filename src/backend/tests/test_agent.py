@@ -38,6 +38,8 @@ def agent_settings(tmp_path: Path) -> Settings:
     get_settings.cache_clear()
     db_path = tmp_path / "agent.db"
     settings = Settings(
+        _env_file=None,
+        auth_enabled=False,
         database_url=f"sqlite:///{db_path.as_posix()}",
         local_storage_root=tmp_path / "store",
         storage_backend="local",

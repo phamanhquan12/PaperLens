@@ -50,13 +50,14 @@ against an existing database before enabling it, then configure:
 ```text
 AUTH_ENABLED=true
 SUPABASE_AUTH_URL=https://YOUR_PROJECT.supabase.co
-SUPABASE_JWT_SECRET=...
-SUPABASE_ANON_KEY=...
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+SUPABASE_JWKS_URL=https://YOUR_PROJECT.supabase.co/auth/v1/.well-known/jwks.json
 ```
 
-`SUPABASE_ANON_KEY` is injected only into the frontend container; the JWT secret
-belongs only on the API. Existing pre-v0.2 rows remain assigned to `local-user`
-and must be reassigned or removed before production account mode is enabled.
+The publishable key is injected only into the frontend container. PaperLens
+verifies access tokens against Supabase JWKS and does not require a secret or
+service-role key. Existing pre-v0.2 rows remain assigned to `local-user` and
+must be reassigned or removed before production account mode is enabled.
 
 ## Run locally
 
@@ -115,12 +116,12 @@ root:
 python src\ops\deploy_cloud_run.py both --gpu
 ```
 
-After the account migration and JWT secret are ready, enable account mode with:
+After the account migration is ready, enable account mode with:
 
 ```powershell
 python src\ops\deploy_cloud_run.py both --gpu --enable-auth `
   --supabase-auth-url "https://YOUR_PROJECT.supabase.co" `
-  --supabase-anon-key "$env:SUPABASE_ANON_KEY"
+  --supabase-anon-key "$env:SUPABASE_PUBLISHABLE_KEY"
 ```
 
 Required secrets are expected in Google Secret Manager. The helper scripts under

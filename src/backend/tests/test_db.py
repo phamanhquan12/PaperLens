@@ -22,6 +22,8 @@ def db_settings(tmp_path: Path) -> Settings:
     get_settings.cache_clear()
     db_path = tmp_path / "test.db"
     settings = Settings(
+        _env_file=None,
+        auth_enabled=False,
         database_url=f"sqlite:///{db_path.as_posix()}",
         local_storage_root=tmp_path / "store",
         storage_backend="local",
@@ -152,6 +154,8 @@ def test_library_api_list_and_delete(db_settings: Settings, tmp_path: Path, monk
 
     def _settings() -> Settings:
         return Settings(
+            _env_file=None,
+            auth_enabled=False,
             database_url=f"sqlite:///{db_path.as_posix()}",
             local_storage_root=store_root,
             storage_backend="local",

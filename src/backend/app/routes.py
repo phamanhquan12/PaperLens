@@ -307,10 +307,11 @@ def _load_meta(
 @router.get("/papers/{paper_id}", response_model=PaperMetadataResponse)
 def get_paper(
     paper_id: str,
+    settings: Settings = Depends(get_settings),
     storage: StorageBackend = Depends(storage_dep),
     user: CurrentUser = Depends(current_user),
 ) -> PaperMetadataResponse:
-    meta = _load_meta(storage, paper_id, user_id=user.user_id)
+    meta = _load_meta(storage, paper_id, user_id=user.user_id, settings=settings)
     artifacts = meta.get("artifacts") or {}
     return PaperMetadataResponse(
         paper_id=meta["paper_id"],
@@ -361,10 +362,11 @@ def delete_paper(
 @router.get("/papers/{paper_id}/document", response_model=PaperDocument)
 def get_document(
     paper_id: str,
+    settings: Settings = Depends(get_settings),
     storage: StorageBackend = Depends(storage_dep),
     user: CurrentUser = Depends(current_user),
 ) -> PaperDocument:
-    _load_meta(storage, paper_id, user_id=user.user_id)
+    _load_meta(storage, paper_id, user_id=user.user_id, settings=settings)
     key = paper_normalized_key(paper_id, "paper_document.json")
     if not storage.exists(key):
         raise HTTPException(status_code=404, detail="paper_document.json not found")
@@ -378,10 +380,11 @@ def get_elements(
     page: int | None = None,
     section: str | None = None,
     kept_only: bool = True,
+    settings: Settings = Depends(get_settings),
     storage: StorageBackend = Depends(storage_dep),
     user: CurrentUser = Depends(current_user),
 ) -> dict[str, Any]:
-    _load_meta(storage, paper_id, user_id=user.user_id)
+    _load_meta(storage, paper_id, user_id=user.user_id, settings=settings)
     if kept_only:
         key = paper_normalized_key(paper_id, "cleaned_text.jsonl")
         if not storage.exists(key):
@@ -395,7 +398,7 @@ def get_elements(
 
             elements.append(json.loads(line))
     else:
-        doc = get_document(paper_id, storage, user)
+        doc = get_document(paper_id, settings, storage, user)
         elements = [el.model_dump(mode="json") for el in doc.text_elements]
 
     filtered: list[dict[str, Any]] = []
@@ -416,14 +419,15 @@ def get_elements(
 @router.get("/papers/{paper_id}/assets", response_model=AssetManifest)
 def get_assets(
     paper_id: str,
+    settings: Settings = Depends(get_settings),
     storage: StorageBackend = Depends(storage_dep),
     user: CurrentUser = Depends(current_user),
 ) -> AssetManifest:
-    _load_meta(storage, paper_id, user_id=user.user_id)
+    _load_meta(storage, paper_id, user_id=user.user_id, settings=settings)
     key = paper_normalized_key(paper_id, "assets_manifest.json")
     if storage.exists(key):
         return AssetManifest.model_validate(storage.read_json(key))
-    doc = get_document(paper_id, storage, user)
+    doc = get_document(paper_id, settings, storage, user)
     return AssetManifest(tables=doc.tables, figures=doc.figures, formulas=doc.formulas)
 
 
@@ -432,11 +436,12 @@ def get_asset_content(
     paper_id: str,
     asset_type: str,
     element_id: str,
+    settings: Settings = Depends(get_settings),
     storage: StorageBackend = Depends(storage_dep),
     user: CurrentUser = Depends(current_user),
 ) -> Response:
     """Return a private visual asset through the API for browser display."""
-    manifest = get_assets(paper_id, storage, user)
+    manifest = get_assets(paper_id, settings, storage, user)
     buckets = {
         "table": manifest.tables,
         "figure": manifest.figures,
@@ -822,7 +827,7 @@ def enrich_paper(
             message="Luna enrichment disabled. Set LUNA_ENABLED=true and ALLOW_EXTERNAL_API=true.",
         )
 
-    manifest = get_assets(paper_id, storage, user)
+    manifest = get_assets(paper_id, settings, storage, user)
     candidates: list[VisualElement] = []
     if body.scope in {"visual", "both"} and client.is_enabled:
         for kind in body.element_types:
