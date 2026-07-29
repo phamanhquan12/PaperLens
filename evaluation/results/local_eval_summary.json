@@ -1,0 +1,6 @@
+{
+  "retrieval_examples": 30,
+  "qa_examples": 25,
+  "note": "Expand with real paper IDs/pages before claiming portfolio metrics.",
+  "paid_calls": false
+}
