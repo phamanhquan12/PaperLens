@@ -14,3 +14,5 @@
 | K010 | med | Frontend image initially included Docling/Torch | Fixed via `requirements-frontend.txt`; redeploying |
 | K011 | low | Embeddings default to hashing (not semantic) | Documented; configure real provider for production RAG quality |
 | K012 | low | No Alembic migration history yet | `create_all` used; add Alembic when schema churn increases |
+| K013 | med | Cloud Run upload failed: missing `libxcb` | Fixed in Dockerfile (system libs); redeployed |
+| K014 | med | Cloud Run upload failed: RapidOCR model write as non-root | Fixing via writable caches + `DOCLING_OCR_MODE=off` |

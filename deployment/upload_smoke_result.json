@@ -1,0 +1,31 @@
+{
+  "api": "https://paperlens-api-uopctebpeq-as.a.run.app",
+  "status_code": 200,
+  "elapsed_s": 62.9,
+  "body": {
+    "paper_id": "6cd972c1-0e82-40b1-8ff0-add19988d28c",
+    "filename": "smoke_tiny.pdf",
+    "status": "completed",
+    "parse_status": "SUCCESS",
+    "pages": 1,
+    "text_elements": 1,
+    "tables": 0,
+    "pictures": 0,
+    "formulas": 0,
+    "artifacts": {
+      "raw_pdf": "raw/papers/6cd972c1-0e82-40b1-8ff0-add19988d28c/source.pdf",
+      "docling_json": "parsed/papers/6cd972c1-0e82-40b1-8ff0-add19988d28c/document.json",
+      "docling_md": "parsed/papers/6cd972c1-0e82-40b1-8ff0-add19988d28c/document.md",
+      "docling_html": "parsed/papers/6cd972c1-0e82-40b1-8ff0-add19988d28c/document.html",
+      "parse_report": "parsed/papers/6cd972c1-0e82-40b1-8ff0-add19988d28c/parse_report.json",
+      "cleaned_text": "normalized/papers/6cd972c1-0e82-40b1-8ff0-add19988d28c/cleaned_text.jsonl",
+      "cleaned_document": "normalized/papers/6cd972c1-0e82-40b1-8ff0-add19988d28c/cleaned_document.md",
+      "element_audit": "normalized/papers/6cd972c1-0e82-40b1-8ff0-add19988d28c/element_audit.csv",
+      "paper_document": "normalized/papers/6cd972c1-0e82-40b1-8ff0-add19988d28c/paper_document.json",
+      "assets_manifest": "normalized/papers/6cd972c1-0e82-40b1-8ff0-add19988d28c/assets_manifest.json"
+    },
+    "warnings": [],
+    "error": null,
+    "job_id": null
+  }
+}

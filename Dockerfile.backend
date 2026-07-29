@@ -5,10 +5,25 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=8080 \
-    APP_ENV=production
+    APP_ENV=production \
+    HOME=/app \
+    HF_HOME=/app/.cache/huggingface \
+    TORCH_HOME=/app/.cache/torch \
+    XDG_CACHE_HOME=/app/.cache \
+    OMP_NUM_THREADS=1 \
+    DOCLING_NUM_THREADS=1 \
+    DOCLING_OCR_MODE=off
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    libgl1 \
+    libglib2.0-0 \
+    libxcb1 \
+    libx11-6 \
+    libxext6 \
+    libxrender1 \
+    libsm6 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1001 paperlens
 
@@ -16,8 +31,9 @@ COPY pyproject.toml README.md ./
 COPY app ./app
 RUN pip install --no-cache-dir -U pip \
     && pip install --no-cache-dir . \
-    && mkdir -p /app/data \
-    && chown -R paperlens:paperlens /app
+    && mkdir -p /app/.cache /app/data \
+    && chown -R paperlens:paperlens /app \
+    && chmod -R a+rwX /usr/local/lib/python3.11/site-packages/rapidocr || true
 
 USER paperlens
 EXPOSE 8080

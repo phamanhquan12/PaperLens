@@ -1,1 +1,3 @@
-
+{"id": "rq-001", "paper_hint": "1078_Beyond_Calibration_Improv", "query": "What is temperature scaling?", "expected_pages": [1, 2], "notes": "Seed query; verify against ingested paper before scoring"}
+{"id": "rq-002", "paper_hint": "1078_Beyond_Calibration_Improv", "query": "What datasets are used for evaluation?", "expected_pages": [3, 4, 5], "notes": "Seed query"}
+{"id": "rq-003", "paper_hint": "1078_Beyond_Calibration_Improv", "query": "What limitations does the paper discuss?", "expected_pages": [15, 16, 17], "notes": "Seed query"}

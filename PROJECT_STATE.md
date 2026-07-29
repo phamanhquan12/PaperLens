@@ -1,29 +1,30 @@
 # Project State
 
 **Updated:** 2026-07-29  
-**Git HEAD (pre-commit of this cycle):** `19af85a`  
-**Unit tests:** **56 passed** (`pytest -m "not integration"`)
+**Unit tests:** **56 passed**  
+**Git:** commits include `922e518` plus pending follow-ups
 
-## Completed this cycle
+## Live deployment
 
-- Supabase Postgres connected via transaction pooler (port 6543) with NullPool + SSL
-- `SUPABASE_URL` accepted as DATABASE_URL fallback; local `DATABASE_URL` synced (gitignored)
-- `python -m app.cli check-database` / `init-db` added
-- Schema created on Supabase: papers, sections, elements, visuals, chunks, jobs
-- Persistence smoke passed (write/read/cascade delete; no binaries in DB)
-- GCS bucket verified; smoke write/read/delete OK
-- Secret Manager secret `paperlens-database-url` created; runtime SA accessor granted
-- Artifact Registry repo `paperlens` created
-- **Backend deployed:** https://paperlens-api-uopctebpeq-as.a.run.app (revision `paperlens-api-00001-2jb`)
-- Backend smoke: health/papers/validation OK; uses GCS + Secret Manager DATABASE_URL
-- Frontend initially built too heavy (full Docling); slim `requirements-frontend.txt` redeploy in progress
+| Service | URL | Revision |
+|---------|-----|----------|
+| API | https://paperlens-api-uopctebpeq-as.a.run.app | `paperlens-api-00003-8rv` |
+| UI | https://paperlens-ui-uopctebpeq-as.a.run.app | `paperlens-ui-00003-9vn` (or later) |
 
-## Active work
+## Verified this cycle
 
-- Slim Streamlit Cloud Run redeploy
-- Production PDF upload smoke
-- Real evaluation datasets + Streamlit polish + screenshots + final docs
+- Supabase transaction pooler (6543) + NullPool + SSL
+- Schema init: 6 tables / 19 indexes / 7 FKs
+- Persistence smoke + cascade delete
+- GCS smoke + production object URIs
+- Secret Manager `paperlens-database-url`
+- Cloud Run API health/library/validation
+- **Production PDF upload SUCCESS** (~63s for tiny PDF) after fixing libxcb + RapidOCR permissions / OCR-off
+- Slim Streamlit UI deployed (no Docling in UI image)
 
-## Blockers
+## Remaining for final portfolio gate
 
-None requiring user action right now (billing, gcloud, Supabase URL available).
+- Expand real-paper eval sets to ≥30 retrieval / ≥25 QA with verified pages
+- Capture UI screenshots
+- Complete FINAL_PROJECT_REPORT / ARCHITECTURE polish
+- Optional LangSmith when key provided

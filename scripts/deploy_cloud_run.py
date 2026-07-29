@@ -95,6 +95,7 @@ options:
             "--max-instances=3",
             "--set-env-vars=APP_ENV=production,STORAGE_BACKEND=gcs,"
             f"GCP_PROJECT_ID={PROJECT},GCS_BUCKET_NAME=paperlens-dev-26-paper-storage,"
+            "DOCLING_OCR_MODE=off,DOCLING_THREADS=1,"
             "LUNA_ENABLED=false,ALLOW_EXTERNAL_API=false,"
             "LANGSMITH_ENABLED=false,LANGSMITH_TRACING=false,"
             "EMBEDDING_PROVIDER=hashing,INGEST_ASYNC=false",

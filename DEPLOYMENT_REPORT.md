@@ -61,6 +61,7 @@ Note: local `.env` originally stored the Postgres DSN under `SUPABASE_URL` (not 
 | GET /papers | 200 `{count, papers}` (~433 ms) |
 | POST invalid extension | 400 |
 | GET unknown paper | 404 |
+| POST tiny PDF upload | **200 SUCCESS** (~62.9s) paper `6cd972c1-...` on revision `paperlens-api-00003-8rv` |
 
 ## Frontend deployment
 
