@@ -6,8 +6,8 @@ __pycache__
 .env
 .env.*
 !.env.example
-outputs
-data
+runtime/outputs
+runtime/data
 *.db
 *.sqlite*
 *.pdf
@@ -19,4 +19,4 @@ application_default_credentials.json
 test.ipynb
 test.py
 *.egg-info
-backend/evaluation/results
+src/backend/evaluation/results

@@ -8,15 +8,18 @@ workflows.
 ## Repository layout
 
 ```text
-backend/
-  app/          FastAPI, Docling, LangChain and LangGraph application
-  tests/        backend test suite
-  scripts/      parsing, evaluation and database utilities
-  evaluation/   retrieval and QA datasets/results
-  migrations/   database bootstrap SQL
-  pyproject.toml
-frontend/       static HTML/CSS/JavaScript research workspace
-scripts/        deployment and secret-management utilities
+src/
+  backend/
+    app/        FastAPI, Docling, LangChain and LangGraph application
+    tests/      backend test suite
+    scripts/    parsing, evaluation and database utilities
+    evaluation/ retrieval and QA datasets/results
+    migrations/ database bootstrap SQL
+  frontend/     static HTML/CSS/JavaScript research workspace
+  ops/          deployment and secret-management utilities
+runtime/
+  data/         local SQLite data
+  outputs/      local paper artifacts
 .env.example    environment template
 Dockerfile.*    CPU API, GPU API and frontend images
 cloudbuild.*    Google Cloud Build definitions
@@ -32,7 +35,7 @@ cd PaperLens
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -U pip
-python -m pip install -e ".\backend[dev]"
+python -m pip install -e ".\src\backend[dev]"
 Copy-Item .env.example .env
 ```
 
@@ -51,7 +54,7 @@ Frontend in another terminal:
 
 ```powershell
 $env:PAPERLENS_API_URL = "http://127.0.0.1:8000"
-python -m http.server 3000 --directory frontend
+python -m http.server 3000 --directory src\frontend
 ```
 
 Open `http://127.0.0.1:3000`.
@@ -59,13 +62,13 @@ Open `http://127.0.0.1:3000`.
 ## Tests
 
 ```powershell
-python -m pytest backend\tests -m "not integration" -q
+python -m pytest src\backend\tests -m "not integration" -q
 ```
 
 Optional sample ingestion:
 
 ```powershell
-python backend\scripts\run_sample_parse.py
+python src\backend\scripts\run_sample_parse.py
 ```
 
 ## Docker
@@ -92,11 +95,11 @@ The deployment script builds and deploys the API and frontend from the repositor
 root:
 
 ```powershell
-python scripts\deploy_cloud_run.py both --gpu
+python src\ops\deploy_cloud_run.py both --gpu
 ```
 
 Required secrets are expected in Google Secret Manager. The helper scripts under
-`scripts/` can create/update those references without printing secret values.
+`src/ops/` can create/update those references without printing secret values.
 
 ## Core stack
 

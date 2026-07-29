@@ -23,7 +23,7 @@ def test_classify_transaction_pooler():
 
 
 def test_classify_sqlite():
-    info = classify_database_url("sqlite:///./data/paperlens.db")
+    info = classify_database_url("sqlite:///./runtime/data/paperlens.db")
     assert info.connection_mode == "sqlite"
 
 
@@ -35,7 +35,7 @@ def test_normalize_sqlalchemy_url():
 
 def test_settings_fallback_from_supabase_url():
     settings = Settings(
-        database_url="sqlite:///./data/paperlens.db",
+        database_url="sqlite:///./runtime/data/paperlens.db",
         supabase_url="postgresql://user:pass@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres",
     )
     assert settings.database_url.startswith("postgresql+psycopg://")

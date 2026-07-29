@@ -31,11 +31,11 @@ build/
 .ipynb_checkpoints/
 
 # Generated / large artifacts
-outputs/*
-!outputs/.gitkeep
-data/*
-!data/.gitkeep
-frontend/config.js
+runtime/outputs/*
+!runtime/outputs/.gitkeep
+runtime/data/*
+!runtime/data/.gitkeep
+src/frontend/config.js
 *.pdf
 
 # OS / IDE

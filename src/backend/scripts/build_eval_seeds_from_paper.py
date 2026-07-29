@@ -7,13 +7,13 @@ import re
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 OUT_RET = BACKEND_ROOT / "evaluation" / "datasets" / "retrieval_queries.jsonl"
 OUT_QA = BACKEND_ROOT / "evaluation" / "datasets" / "qa_questions.jsonl"
 
 
 def main() -> int:
-    docs = sorted((ROOT / "outputs").rglob("paper_document.json"))
+    docs = sorted((ROOT / "runtime" / "outputs").rglob("paper_document.json"))
     if not docs:
         print("No paper_document.json found under outputs/")
         return 1

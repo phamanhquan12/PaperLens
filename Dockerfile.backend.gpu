@@ -29,14 +29,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1001 paperlens
 
-COPY backend/pyproject.toml ./pyproject.toml
+COPY src/backend/pyproject.toml ./pyproject.toml
 COPY README.md ./
-COPY backend/app ./app
+COPY src/backend/app ./app
 RUN python -m pip install --no-cache-dir -U pip \
     && python -m pip install --no-cache-dir . \
     && python -m pip uninstall -y onnxruntime \
     && python -m pip install --no-cache-dir onnxruntime-gpu \
-    && mkdir -p /app/.cache /app/data \
+    && mkdir -p /app/.cache /app/runtime/data /app/runtime/outputs \
     && chown -R paperlens:paperlens /app \
     && chmod -R a+rwX /opt/conda/lib/python3.11/site-packages/rapidocr || true
 

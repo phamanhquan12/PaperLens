@@ -3,11 +3,11 @@
   "public": true,
   "cleanUrls": true,
   "rewrites": [
-    { "source": "/(.*)", "destination": "/frontend/$1" }
+    { "source": "/(.*)", "destination": "/src/frontend/$1" }
   ],
   "headers": [
     {
-      "source": "/frontend/config.js",
+      "source": "/src/frontend/config.js",
       "headers": [{ "key": "Cache-Control", "value": "no-store" }]
     }
   ]

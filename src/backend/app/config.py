@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     app_port: int = 8000
 
     storage_backend: Literal["local", "gcs"] = "local"
-    local_storage_root: Path = Path("outputs")
+    local_storage_root: Path = Path("runtime/outputs")
 
     gcp_project_id: str = "paperlens-dev-26"
     gcs_bucket_name: str = "paperlens-dev-26-paper-storage"
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     asset_crop_padding_px: int = 8
     log_level: str = "INFO"
 
-    database_url: str = "sqlite:///./data/paperlens.db"
+    database_url: str = "sqlite:///./runtime/data/paperlens.db"
     # Accepted fallback when users store the Postgres DSN under SUPABASE_URL.
     supabase_url: str | None = None
     migration_database_url: str | None = None
@@ -128,7 +128,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _resolve_database_url(self) -> Settings:
-        default_sqlite = "sqlite:///./data/paperlens.db"
+        default_sqlite = "sqlite:///./runtime/data/paperlens.db"
         url = self.database_url
         if (not url or url == default_sqlite) and self.supabase_url:
             candidate = self.supabase_url.strip()

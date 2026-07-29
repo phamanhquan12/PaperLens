@@ -4,4 +4,4 @@
 -- For Supabase, run create_all against DATABASE_URL or adapt to hosted migrations.
 
 -- papers, paper_sections, paper_elements, visual_elements, paper_chunks, jobs
--- See backend/app/db/models.py for the canonical ORM definition.
+-- See src/backend/app/db/models.py for the canonical ORM definition.

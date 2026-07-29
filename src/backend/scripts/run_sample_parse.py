@@ -6,7 +6,7 @@ import json
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 SAMPLE = ROOT / "1078_Beyond_Calibration_Improv.pdf"
 
 
@@ -19,7 +19,7 @@ def main() -> int:
     from app.pipeline import ingest_pdf_bytes
     from app.storage import LocalStorage
 
-    out = ROOT / "outputs" / "integration_sample"
+    out = ROOT / "runtime" / "outputs" / "integration_sample"
     out.mkdir(parents=True, exist_ok=True)
     settings = Settings(
         storage_backend="local",
