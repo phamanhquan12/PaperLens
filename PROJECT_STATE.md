@@ -1,23 +1,29 @@
 # Project State
 
 **Updated:** 2026-07-29  
-**Unit tests:** **47 passed**  
-**Active blocker:** Cloud Run deploy (no `gcloud` on PATH; need Supabase URL + GCP IAM/billing)
+**Git HEAD (pre-commit of this cycle):** `19af85a`  
+**Unit tests:** **56 passed** (`pytest -m "not integration"`)
 
-## Completed this autonomous run
+## Completed this cycle
 
-Phases **1–9** core implementations + Streamlit scaffold + Dockerfiles.
+- Supabase Postgres connected via transaction pooler (port 6543) with NullPool + SSL
+- `SUPABASE_URL` accepted as DATABASE_URL fallback; local `DATABASE_URL` synced (gitignored)
+- `python -m app.cli check-database` / `init-db` added
+- Schema created on Supabase: papers, sections, elements, visuals, chunks, jobs
+- Persistence smoke passed (write/read/cascade delete; no binaries in DB)
+- GCS bucket verified; smoke write/read/delete OK
+- Secret Manager secret `paperlens-database-url` created; runtime SA accessor granted
+- Artifact Registry repo `paperlens` created
+- **Backend deployed:** https://paperlens-api-uopctebpeq-as.a.run.app (revision `paperlens-api-00001-2jb`)
+- Backend smoke: health/papers/validation OK; uses GCS + Secret Manager DATABASE_URL
+- Frontend initially built too heavy (full Docling); slim `requirements-frontend.txt` redeploy in progress
 
-## User actions required to unblock Phase 11
+## Active work
 
-1. Install Google Cloud SDK and authenticate (`gcloud auth login` + ADC).
-2. Confirm billing enabled on `paperlens-dev-26`.
-3. Provide Supabase Postgres `DATABASE_URL`.
-4. Confirm Cloud Run + Artifact Registry permissions.
+- Slim Streamlit Cloud Run redeploy
+- Production PDF upload smoke
+- Real evaluation datasets + Streamlit polish + screenshots + final docs
 
-## Can continue without that blocker
+## Blockers
 
-- Expand Streamlit polish / screenshots
-- Build 30-query retrieval evaluation set from local papers
-- Optional live Luna enrichment when API key intentionally enabled
-- Portfolio docs / DEMO_SCRIPT
+None requiring user action right now (billing, gcloud, Supabase URL available).

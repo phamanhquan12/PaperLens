@@ -6,8 +6,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.db.url_utils import classify_database_url, normalize_sqlalchemy_url
 
 
 class Settings(BaseSettings):
@@ -52,7 +54,12 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     database_url: str = "sqlite:///./data/paperlens.db"
+    # Accepted fallback when users store the Postgres DSN under SUPABASE_URL.
+    supabase_url: str | None = None
+    migration_database_url: str | None = None
     database_echo: bool = False
+    database_connect_timeout_seconds: int = 10
+    database_statement_timeout_ms: int = 30000
     ingest_async: bool = False
 
     embedding_provider: str = "hashing"
@@ -63,14 +70,40 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 8
     retrieval_use_mmr: bool = False
 
+    paperlens_api_base: str = "http://127.0.0.1:8000"
+    langsmith_enabled: bool = False
+    langsmith_tracing: bool = False
+    allow_paid_evaluation: bool = False
+
     @field_validator("local_storage_root", mode="before")
     @classmethod
     def _coerce_path(cls, value: object) -> Path:
         return Path(str(value))
 
+    @model_validator(mode="after")
+    def _resolve_database_url(self) -> Settings:
+        default_sqlite = "sqlite:///./data/paperlens.db"
+        url = self.database_url
+        if (not url or url == default_sqlite) and self.supabase_url:
+            candidate = self.supabase_url.strip()
+            if candidate.lower().startswith(("postgres://", "postgresql://", "postgresql+")):
+                url = candidate
+        self.database_url = normalize_sqlalchemy_url(url)
+        if self.migration_database_url:
+            self.migration_database_url = normalize_sqlalchemy_url(self.migration_database_url)
+        return self
+
     @property
     def max_pdf_size_bytes(self) -> int:
         return self.max_pdf_size_mb * 1024 * 1024
+
+    @property
+    def database_info(self):
+        return classify_database_url(self.database_url)
+
+    @property
+    def effective_migration_url(self) -> str:
+        return self.migration_database_url or self.database_url
 
 
 @lru_cache

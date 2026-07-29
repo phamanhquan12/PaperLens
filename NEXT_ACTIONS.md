@@ -1,7 +1,8 @@
 # Next Actions
 
-1. Finish Phase 6 review-status fields and retrieval of enrichment JSON.
-2. Implement Phase 7 discovery (OpenAlex + arXiv) with mocks/tests.
-3. Implement Phase 8 multi-paper comparison endpoint.
-4. Build Streamlit multipage UI (Phase 10) against local FastAPI.
-5. Prepare Cloud Run Dockerfiles; deploy when user confirms GCP permissions/billing.
+1. Finish slim `paperlens-ui` Cloud Run deploy and verify Home loads.
+2. Run production PDF upload smoke against API (expect multi-minute cold Docling).
+3. Expand real-paper retrieval/QA evaluation sets (≥30 / ≥25).
+4. Polish Streamlit pages + capture screenshots under `docs/screenshots/`.
+5. Add optional LangSmith hooks behind flags; keep local eval default.
+6. Write `FINAL_PROJECT_REPORT.md` and refresh README/ARCHITECTURE/DEMO_SCRIPT.

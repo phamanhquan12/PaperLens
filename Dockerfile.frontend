@@ -7,10 +7,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8080 \
     PAPERLENS_API_BASE=http://localhost:8080
 
-COPY pyproject.toml README.md ./
-COPY streamlit_app.py ./
-COPY app ./app
-RUN pip install --no-cache-dir -U pip && pip install --no-cache-dir . streamlit
+RUN useradd --create-home --uid 1001 paperlens
 
+COPY requirements-frontend.txt ./
+COPY streamlit_app.py ./
+RUN pip install --no-cache-dir -U pip \
+    && pip install --no-cache-dir -r requirements-frontend.txt \
+    && chown -R paperlens:paperlens /app
+
+USER paperlens
 EXPOSE 8080
-CMD ["streamlit", "run", "streamlit_app.py", "--server.port=8080", "--server.address=0.0.0.0"]
+CMD ["sh", "-c", "streamlit run streamlit_app.py --server.port=${PORT:-8080} --server.address=0.0.0.0 --browser.gatherUsageStats=false"]

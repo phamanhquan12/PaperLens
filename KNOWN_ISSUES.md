@@ -2,12 +2,15 @@
 
 | ID | Severity | Issue | Status |
 |----|----------|-------|--------|
-| K001 | med | Sync Docling parse blocks upload | Mitigated: `INGEST_ASYNC` + jobs table; Cloud Tasks later |
+| K001 | med | Sync Docling parse blocks upload | Mitigated: `INGEST_ASYNC` + jobs; Cloud Tasks later |
 | K002 | low | Empty FormulaItem.text / MathML warnings | Luna fallback flagged |
 | K003 | resolved | Broken `.git` | Re-initialized and committed |
-| K004 | med | Legacy `.env` may contain unrelated secrets | Use `.env.example`; rotate keys |
-| K005 | high | Cloud deploy blocked: `gcloud` missing; need billing/IAM | User action required |
-| K006 | med | Supabase URL not configured | Local SQLite OK |
-| K007 | low | Streamlit UI is functional scaffold, not fully polished | Phase 10 continue |
-| K008 | med | LangGraph workflow not implemented yet | Phase 9 next |
-| K009 | low | Retrieval eval set <30 real-paper queries | Expand in Phase 12 |
+| K004 | med | Legacy BidPilot keys may remain in local `.env` | Rotate; keep gitignored |
+| K005 | resolved | Cloud deploy blocked without gcloud | gcloud available; API deployed |
+| K006 | resolved | Supabase URL not configured | Connected via pooler :6543 |
+| K007 | med | Streamlit UI needs polish + screenshots | In progress |
+| K008 | resolved | LangGraph missing | Implemented |
+| K009 | med | Retrieval eval set <30 real-paper queries | Expand in Phase 12 |
+| K010 | med | Frontend image initially included Docling/Torch | Fixed via `requirements-frontend.txt`; redeploying |
+| K011 | low | Embeddings default to hashing (not semantic) | Documented; configure real provider for production RAG quality |
+| K012 | low | No Alembic migration history yet | `create_all` used; add Alembic when schema churn increases |

@@ -7,7 +7,9 @@ __pycache__
 .env.*
 !.env.example
 outputs
-data/*.db
+data
+*.db
+*.sqlite*
 *.pdf
 application_default_credentials.json
 .pytest_cache
@@ -15,4 +17,6 @@ application_default_credentials.json
 .codex
 .agents
 test.ipynb
+test.py
 *.egg-info
+evaluation/results
