@@ -41,6 +41,35 @@ Copy-Item .env.example .env
 
 Fill the provider and database values in `.env`. Never commit `.env`.
 
+### Required AI provider credentials
+
+PaperLens does not include shared LLM credentials. Every person or organization
+self-hosting PaperLens must provide credentials from an OpenAI-compatible
+provider in their own `.env`:
+
+```text
+LLM_ENABLED=true
+LLM_API_KEY=your-provider-key
+LLM_MODEL=your-chat-model
+LLM_BASE_URL=https://your-provider.example/v1
+
+EMBEDDING_PROVIDER=openai
+EMBEDDING_API_KEY=your-provider-key
+EMBEDDING_MODEL=your-embedding-model
+EMBEDDING_BASE_URL=https://your-provider.example/v1
+```
+
+Visual and cleaned-text enrichment are optional. To enable them, configure
+`LUNA_API_KEY`, `LUNA_MODEL`, and `LUNA_BASE_URL` using your own provider
+account. A self-hosted production deployment must never reuse credentials from
+the public PaperLens deployment or commit provider keys to Git.
+
+These keys belong only in the backend `.env` or a cloud secret manager; never
+put them in frontend configuration. Visitors opening an already-hosted
+PaperLens URL do not edit `.env` and currently consume that deployment owner's
+configured provider account. Per-user bring-your-own-key (BYOK) is not yet
+implemented.
+
 ### Optional account mode
 
 PaperLens supports Supabase email/password authentication with server-enforced
