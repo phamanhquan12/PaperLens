@@ -6,9 +6,10 @@ import json
 import re
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-OUT_RET = ROOT / "evaluation" / "datasets" / "retrieval_queries.jsonl"
-OUT_QA = ROOT / "evaluation" / "datasets" / "qa_questions.jsonl"
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
+OUT_RET = BACKEND_ROOT / "evaluation" / "datasets" / "retrieval_queries.jsonl"
+OUT_QA = BACKEND_ROOT / "evaluation" / "datasets" / "qa_questions.jsonl"
 
 
 def main() -> int:

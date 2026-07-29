@@ -1,217 +1,109 @@
 # PaperLens
 
-PaperLens is a multimodal research-paper ingestion and understanding platform. This repository contains the **MVP vertical slice**: upload a PDF, parse it with Docling, clean/normalize the structure, extract table/figure/formula assets, optionally enrich visuals with Luna, and serve results through a FastAPI API.
+PaperLens is a multimodal research workspace for ingesting scientific PDFs, reading
+their structured content, running hybrid retrieval, asking citation-grounded
+questions, discovering related work, and executing bounded LangGraph research
+workflows.
 
-## Current MVP scope
+## Repository layout
 
-In scope:
-
-- PDF upload and validation
-- Local filesystem storage (default) and GCS adapter (ADC)
-- Docling parsing via `PyPdfiumDocumentBackend`
-- ConversionResult validation (rejects `PARTIAL_SUCCESS` / failures)
-- Raw Docling JSON / Markdown / HTML preservation
-- Element audit + cleaning filters
-- Normalized `PaperDocument`
-- Table / figure / formula asset export
-- Optional Luna enrichment endpoint (disabled by default)
-
-Out of scope for this MVP:
-
-- GROBID
-- Docker / Redis / Celery / Kafka / Kubernetes
-- LangGraph and multi-agent workflows
-- Paper discovery and vector search
-- Full citation-graph product features
-
-## Architecture
-
-```
-PDF upload (multipart)
-    |
-    v
-FastAPI /papers
-    |
-    +--> Storage: raw/papers/{id}/source.pdf
-    |
-    v
-DoclingParser (PyPdfiumDocumentBackend)
-    |
-    +--> parsed/.../document.json|md|html + parse_report.json
-    |
-    v
-Asset extraction (tables / figures / formulas / page previews)
-    |
-    v
-Cleaner + normalizer
-    |
-    +--> element_audit.csv
-    +--> cleaned_text.jsonl
-    +--> cleaned_document.md
-    +--> paper_document.json
-    |
-    v
-Optional POST /papers/{id}/enrich  --> Luna (OpenAI-compatible VLM)
+```text
+backend/
+  app/          FastAPI, Docling, LangChain and LangGraph application
+  tests/        backend test suite
+  scripts/      parsing, evaluation and database utilities
+  evaluation/   retrieval and QA datasets/results
+  migrations/   database bootstrap SQL
+  pyproject.toml
+frontend/       static HTML/CSS/JavaScript research workspace
+scripts/        deployment and secret-management utilities
+.env.example    environment template
+Dockerfile.*    CPU API, GPU API and frontend images
+cloudbuild.*    Google Cloud Build definitions
 ```
 
-## Installation (Windows PowerShell)
+## Local setup
+
+Requirements: Python 3.11+, Git, and optionally Docker.
 
 ```powershell
-cd D:\P1-MAS
+git clone https://github.com/phamanhquan12/PaperLens.git
+cd PaperLens
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -U pip
-python -m pip install -e ".[dev]"
+python -m pip install -e ".\backend[dev]"
 Copy-Item .env.example .env
 ```
 
-## Environment variables
+Fill the provider and database values in `.env`. Never commit `.env`.
 
-See `.env.example`. Important defaults:
+## Run locally
 
-| Variable | Default | Notes |
-|---|---|---|
-| `STORAGE_BACKEND` | `local` | `local` or `gcs` |
-| `LOCAL_STORAGE_ROOT` | `outputs` | Local artifact root |
-| `DOCLING_OCR_MODE` | `auto` | `off` / `on` / `auto` |
-| `DOCLING_THREADS` | `1` | Limits OMP/Docling threads |
-| `LUNA_ENABLED` | `false` | Must be true **and** `ALLOW_EXTERNAL_API=true` to call Luna |
-| `ALLOW_EXTERNAL_API` | `false` | Safety gate for paid calls |
-| `MAX_PDF_SIZE_MB` | `50` | Upload limit |
-
-Never commit `.env` or API keys.
-
-## Local run
+Backend:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Streamlit UI (separate terminal):
+Frontend in another terminal:
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
-$env:PAPERLENS_API_BASE = "http://127.0.0.1:8000"
-streamlit run streamlit_app.py
+$env:PAPERLENS_API_URL = "http://127.0.0.1:8000"
+python -m http.server 3000 --directory frontend
 ```
 
-Health check:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/health
-```
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-Upload a PDF:
-
-```powershell
-Invoke-RestMethod `
-  -Uri http://127.0.0.1:8000/papers `
-  -Method Post `
-  -Form @{ file = Get-Item ".\1078_Beyond_Calibration_Improv.pdf" }
-```
-
-```bash
-curl -X POST http://127.0.0.1:8000/papers \
-  -F "file=@1078_Beyond_Calibration_Improv.pdf"
-```
-
-Fetch normalized document:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/papers/<paper_id>/document
-```
-
-## Docling backend decision
-
-On Windows, the previous default Docling backend exhausted memory (`std::bad_alloc` after ~page 8) on the sample paper. The working configuration uses:
-
-- `PyPdfiumDocumentBackend`
-- OCR off for digitally generated PDFs (`DOCLING_OCR_MODE=auto` falls back to off when embedded text is present)
-- Table structure enabled
-- Page / picture / table image generation for asset crops
-- Low thread count (`DOCLING_THREADS=1`)
-
-Do not revert to the failing default backend without re-validating memory behavior.
-
-## Why GROBID was excluded
-
-GROBID is useful for bibliographic structure, but it adds a separate Java service and operational complexity. This MVP uses Docling directly as a Python library for layout-aware multimodal parsing (text + tables + figures + formula regions) without another daemon.
-
-## Why Luna is optional
-
-Docling is the canonical document parser. Luna is a vision-language enrichment layer for:
-
-- empty / invalid formula transcriptions
-- figure semantics
-- table interpretation
-
-External calls are disabled unless both `LUNA_ENABLED=true` and `ALLOW_EXTERNAL_API=true`. Enrichment is never performed automatically on upload.
-
-## Google Cloud Storage / ADC
-
-Local development works with filesystem storage and does **not** require a service-account JSON file.
-
-For GCS:
-
-1. Install Google Cloud SDK (optional) and authenticate with Application Default Credentials, for example:
-
-```powershell
-gcloud auth application-default login
-```
-
-2. Set:
-
-```powershell
-$env:STORAGE_BACKEND = "gcs"
-$env:GCP_PROJECT_ID = "paperlens-dev-26"
-$env:GCS_BUCKET_NAME = "paperlens-dev-26-paper-storage"
-```
-
-The GCS adapter uses `google.cloud.storage.Client` with ADC. Do not download or commit service-account keys for normal development.
-
-## Switching storage backends
-
-- Local: `STORAGE_BACKEND=local` and `LOCAL_STORAGE_ROOT=outputs`
-- GCS: `STORAGE_BACKEND=gcs` plus project/bucket env vars
-
-Logical object keys are identical across backends (`raw/`, `parsed/`, `normalized/`, `assets/`, `enrichment/`).
+Open `http://127.0.0.1:3000`.
 
 ## Tests
 
-Unit tests (no paid APIs, no sample PDF required):
-
 ```powershell
-.\.venv\Scripts\Activate.ps1
-python -m pytest tests -m "not integration" -q
+python -m pytest backend\tests -m "not integration" -q
 ```
 
-Optional sample integration (requires `1078_Beyond_Calibration_Improv.pdf` in the repo root; Docling may take several minutes):
+Optional sample ingestion:
 
 ```powershell
-python -m pytest tests/test_integration_sample.py -m integration -q
-# or
-python scripts\run_sample_parse.py
+python backend\scripts\run_sample_parse.py
 ```
 
-## Known limitations
+## Docker
 
-- Synchronous parsing on upload; large PDFs block the request
-- Title/author metadata detection is heuristic and may be uncertain
-- Formula OCR/transcription from Docling may be empty; marked `needs_enrichment=true`
-- HTML/MathML exporter failures are recorded as warnings and do not invalidate a successful core parse
-- Luna is mock-tested by default; live calls require explicit enablement
-- GCS path is implemented but not required for local MVP verification
+Build and run the CPU API:
 
-## Next development phase
+```powershell
+docker build -f Dockerfile.backend -t paperlens-api .
+docker run --env-file .env -p 8000:8080 paperlens-api
+```
 
-- Background job queue for long parses
-- Structure-aware chunking + retrieval index
-- Citation graph extraction
-- Multi-paper comparison workflows
-- Hardened caption/surrounding-text linking
-- Production deployment on GCP
+Build and run the frontend:
+
+```powershell
+docker build -f Dockerfile.frontend -t paperlens-ui .
+docker run -e PAPERLENS_API_URL=http://host.docker.internal:8000 -p 3000:8080 paperlens-ui
+```
+
+For NVIDIA L4/CUDA deployments, use `Dockerfile.backend.gpu`.
+
+## Cloud Run
+
+The deployment script builds and deploys the API and frontend from the repository
+root:
+
+```powershell
+python scripts\deploy_cloud_run.py both --gpu
+```
+
+Required secrets are expected in Google Secret Manager. The helper scripts under
+`scripts/` can create/update those references without printing secret values.
+
+## Core stack
+
+- FastAPI and SQLAlchemy/PostgreSQL
+- Docling PDF parsing
+- LangChain chunking, embeddings, PGVector, BM25 and grounded QA
+- LangGraph research orchestration and tool-calling agent
+- OpenAI-compatible LLM/VLM providers
+- Google Cloud Storage and Cloud Run
+- Static JavaScript frontend with streaming Markdown, KaTeX and SVG plots

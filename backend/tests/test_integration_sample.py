@@ -10,7 +10,7 @@ from app.config import Settings
 from app.pipeline import ingest_pdf_bytes
 from app.storage import LocalStorage
 
-SAMPLE = Path(__file__).resolve().parents[1] / "1078_Beyond_Calibration_Improv.pdf"
+SAMPLE = Path(__file__).resolve().parents[2] / "1078_Beyond_Calibration_Improv.pdf"
 
 
 @pytest.mark.integration

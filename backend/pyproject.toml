@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "paperlens"
 version = "0.1.0"
 description = "Multimodal research-paper ingestion and understanding MVP"
-readme = "README.md"
+readme = {text = "PaperLens backend service", content-type = "text/markdown"}
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115",

@@ -25,10 +25,12 @@ CASES = [
     {"query": "ImageNet reliability", "expected_substrings": ["ImageNet"]},
 ]
 
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
 
 def main() -> None:
     reset_engine()
-    out_dir = Path("evaluation/results")
+    out_dir = BACKEND_ROOT / "evaluation" / "results"
     out_dir.mkdir(parents=True, exist_ok=True)
     db = out_dir / "eval.db"
     settings = Settings(

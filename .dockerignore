@@ -19,4 +19,4 @@ application_default_credentials.json
 test.ipynb
 test.py
 *.egg-info
-evaluation/results
+backend/evaluation/results

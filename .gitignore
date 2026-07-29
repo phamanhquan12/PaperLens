@@ -35,6 +35,7 @@ outputs/*
 !outputs/.gitkeep
 data/*
 !data/.gitkeep
+frontend/config.js
 *.pdf
 
 # OS / IDE
