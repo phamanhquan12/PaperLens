@@ -64,6 +64,30 @@ def test_code_tool_is_explicitly_non_executing():
     assert artifact["executed"] is False
 
 
+def test_code_tool_normalizes_framework_names_without_crashing():
+    tool = build_code_tools(_CodeModel())[0]
+    content, artifact = tool.func(
+        task="generate",
+        language="PyTorch",
+        question="Implement a recurrent neural network",
+    )
+    assert "quadratic" in content
+    assert artifact["language"] == "python"
+    assert artifact["requested_language"] == "pytorch"
+
+
+def test_code_tool_returns_recoverable_feedback_for_unknown_language():
+    tool = build_code_tools(_CodeModel())[0]
+    content, artifact = tool.func(
+        task="generate",
+        language="unknown-framework",
+        question="Generate an example",
+    )
+    assert "Unsupported language" in content
+    assert artifact["kind"] == "code_assist_error"
+    assert artifact["executed"] is False
+
+
 class _StructuredModel:
     def with_structured_output(self, schema):
         assert schema is SectionTextEnrichment
