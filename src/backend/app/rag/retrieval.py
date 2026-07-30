@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.config import Settings, get_settings
 from app.db.models import Paper, PaperChunk
 from app.db.session import session_scope
-from app.embeddings import get_embeddings, get_vector_store
+from app.rag.embeddings import get_embeddings, get_vector_store
 
 logger = logging.getLogger(__name__)
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.cleaner import decide_keep_for_text, is_margin_line_number
+from app.ingestion.cleaner import decide_keep_for_text, is_margin_line_number
 from collections import Counter
 
 

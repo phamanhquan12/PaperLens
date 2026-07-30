@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import __version__
 from app.config import get_settings
 from app.db.session import init_db
-from app.parser import apply_thread_limits
+from app.ingestion.parser import apply_thread_limits
 from app.routes import router
 
 settings = get_settings()

@@ -15,8 +15,8 @@ from app.auth import CurrentUser, current_user
 from app.db.agent_repository import AgentConversationRepository
 from app.db.repository import PaperRepository
 from app.db.session import session_scope
-from app.luna import LunaClient, LunaDisabledError
-from app.pipeline import IngestionError, ingest_pdf_bytes
+from app.ingestion.luna import LunaClient, LunaDisabledError
+from app.ingestion.pipeline import IngestionError, ingest_pdf_bytes
 from app.schemas import (
     AgentConversationResponse,
     AgentConversationListResponse,
@@ -45,18 +45,18 @@ from app.schemas import (
     RetrieveRequest,
     VisualElement,
 )
-from app.agent import get_agent_conversation, run_agent, stream_agent
-from app.compare import compare_papers
-from app.accelerator import accelerator_status
-from app.discovery import DiscoveryError, discover_papers, find_library_duplicates
-from app.embeddings import index_paper_chunks
-from app.guardrails import GuardrailError, validate_agent_input
-from app.qa import answer_paper_question
-from app.research_graph import run_research
-from app.retrieval import retrieve
-from app.text_enrichment import enrich_cleaned_text
+from app.harness.agent import get_agent_conversation, run_agent, stream_agent
+from app.research.compare import compare_papers
+from app.infrastructure.accelerator import accelerator_status
+from app.research.discovery import DiscoveryError, discover_papers, find_library_duplicates
+from app.rag.embeddings import index_paper_chunks
+from app.harness.guardrails import GuardrailError, validate_agent_input
+from app.rag.qa import answer_paper_question
+from app.research.research_graph import run_research
+from app.rag.retrieval import retrieve
+from app.ingestion.text_enrichment import enrich_cleaned_text
 
-from app.storage import (
+from app.infrastructure.storage import (
     ObjectNotFoundError,
     StorageBackend,
     get_storage,
@@ -166,9 +166,9 @@ async def upload_paper(
 
     if settings.ingest_async:
         # Validate quickly, store raw PDF, return accepted, parse in background.
-        from app.parser import is_pdf_bytes, sanitize_filename
+        from app.ingestion.parser import is_pdf_bytes, sanitize_filename
         from app.db.repository import PaperRepository
-        from app.storage import paper_raw_pdf_key
+        from app.infrastructure.storage import paper_raw_pdf_key
 
         if not filename:
             raise HTTPException(status_code=400, detail="Filename is required")
@@ -574,7 +574,7 @@ def discover_endpoint(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     payload = result.model_dump(mode="json")
     for item in payload["results"]:
-        from app.discovery import DiscoveryPaper
+        from app.research.discovery import DiscoveryPaper
 
         paper = DiscoveryPaper.model_validate(item)
         item["library_matches"] = find_library_duplicates(

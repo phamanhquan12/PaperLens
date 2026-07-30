@@ -7,12 +7,12 @@ from pathlib import Path
 import pytest
 from langchain_core.documents import Document
 
-from app.chunking import ChunkingConfig, chunk_paper_document, persist_chunks
+from app.ingestion.chunking import ChunkingConfig, chunk_paper_document, persist_chunks
 from app.config import Settings, get_settings
 from app.db.repository import PaperRepository
 from app.db.session import init_db, reset_engine, session_scope
-from app.embeddings import index_paper_chunks
-from app.qa import GroundedSynthesis, answer_paper_question
+from app.rag.embeddings import index_paper_chunks
+from app.rag.qa import GroundedSynthesis, answer_paper_question
 from app.schemas import ArtifactPaths, PaperDocument, TextElement
 
 
@@ -141,7 +141,7 @@ def test_langchain_grounded_mode_uses_only_valid_citations(
             {"retriever": "langchain_test", "returned": 1},
         )
 
-    monkeypatch.setattr("app.qa._langchain_synthesize", fake_synthesize)
+    monkeypatch.setattr("app.rag.qa._langchain_synthesize", fake_synthesize)
     answer, _state = answer_paper_question(
         paper_id="qa1",
         question="What method does the paper propose?",

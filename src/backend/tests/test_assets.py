@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.assets import bbox_to_pil_crop
+from app.ingestion.assets import bbox_to_pil_crop
 from app.schemas import BoundingBox
 
 

@@ -8,12 +8,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.chunking import ChunkingConfig, chunk_paper_document, persist_chunks
+from app.ingestion.chunking import ChunkingConfig, chunk_paper_document, persist_chunks
 from app.config import Settings
 from app.db.repository import PaperRepository
 from app.db.session import init_db, reset_engine, session_scope
-from app.embeddings import index_paper_chunks
-from app.retrieval import evaluate_retrieval
+from app.rag.embeddings import index_paper_chunks
+from app.rag.retrieval import evaluate_retrieval
 from app.schemas import ArtifactPaths, PaperDocument, TextElement
 
 

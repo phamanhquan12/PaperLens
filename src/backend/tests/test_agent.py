@@ -11,25 +11,24 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
-from app.agent import (
-    _deserialize_message,
-    _serialize_message,
-    get_agent_conversation,
-    run_agent,
-    stream_agent,
+from app.harness.agent import get_agent_conversation, run_agent, stream_agent
+from app.harness.context import (
+    deserialize_message,
+    save_history,
+    serialize_message,
 )
 from app.config import Settings, get_settings
 from app.db.agent_repository import AgentConversationRepository
 from app.db.session import init_db, reset_engine, session_scope
-from app.guardrails import (
+from app.harness.guardrails import (
     GuardrailError,
     apply_output_guardrails,
     validate_agent_input,
     validate_image_data_url,
 )
 from app.main import app
-from app.math_tools import analyze_expression, parse_math_expression, plot_expression
-from app.storage import LocalStorage
+from app.tools.math_tools import analyze_expression, parse_math_expression, plot_expression
+from app.infrastructure.storage import LocalStorage
 
 
 @pytest.fixture()
@@ -64,7 +63,7 @@ def client(agent_settings: Settings, tmp_path: Path, monkeypatch):
     get_settings.cache_clear()
     monkeypatch.setattr("app.routes.get_settings", _settings)
     monkeypatch.setattr("app.main.get_settings", _settings)
-    monkeypatch.setattr("app.agent.get_settings", _settings)
+    monkeypatch.setattr("app.harness.agent.get_settings", _settings)
 
     from app import routes
 
@@ -178,7 +177,7 @@ def test_message_serialization_strips_image_bytes():
             {"type": "image_url", "image_url": {"url": data_url}},
         ]
     )
-    record = _serialize_message(human)
+    record = serialize_message(human)
     assert record["role"] == "human"
     assert record["content"] == "look"
     assert record["message_metadata"]["has_image"] is True
@@ -186,7 +185,7 @@ def test_message_serialization_strips_image_bytes():
     assert "base64" not in dumped
     assert data_url not in dumped
 
-    restored = _deserialize_message(record)
+    restored = deserialize_message(record)
     assert isinstance(restored, HumanMessage)
     assert restored.content == "look"
 
@@ -208,9 +207,7 @@ def test_persist_conversation_and_get_endpoint(client, agent_settings: Settings,
             AIMessage(content="Hello back"),
         ]
         # Persist via the real repository path used by run_agent.
-        from app.agent import _save_history
-
-        _save_history(
+        save_history(
             conversation_id or cid,
             messages,
             selected_papers=list(selected_papers or []),
@@ -286,7 +283,7 @@ def test_run_agent_persists_without_image_bytes(agent_settings: Settings, monkey
             AIMessage(content="ok"),
         ]
     }
-    monkeypatch.setattr("app.agent._create_graph", lambda settings, selected: fake_graph)
+    monkeypatch.setattr("app.harness.agent._create_graph", lambda settings, selected: fake_graph)
 
     result = run_agent(
         "hi",
@@ -324,8 +321,8 @@ def test_tool_message_roundtrip_preserves_artifact():
         status="success",
         artifact={"kind": "plot", "x": [0.0], "y": [0.0]},
     )
-    record = _serialize_message(original)
-    restored = _deserialize_message(record)
+    record = serialize_message(original)
+    restored = deserialize_message(record)
     assert isinstance(restored, ToolMessage)
     assert restored.name == "plot_function"
     assert restored.artifact["kind"] == "plot"
@@ -360,7 +357,7 @@ def test_stream_agent_filters_nested_tool_model_tokens(
                 },
             )
 
-    monkeypatch.setattr("app.agent._create_graph", lambda settings, selected: FakeGraph())
+    monkeypatch.setattr("app.harness.agent._create_graph", lambda settings, selected: FakeGraph())
     events = list(
         stream_agent(
             "question",

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings, get_settings
 from app.main import app
-from app.storage import LocalStorage, get_storage
+from app.infrastructure.storage import LocalStorage, get_storage
 
 
 @pytest.fixture()
@@ -259,7 +259,7 @@ def test_private_asset_content_proxy(client, tmp_path):
 
 
 def test_valid_pdf_upload_mocked(client, monkeypatch, tmp_path):
-    from app import pipeline
+    from app.ingestion import pipeline
     from app.schemas import ArtifactPaths, IngestionResponse
 
     def fake_ingest(data, filename, settings=None, storage=None, paper_id=None):

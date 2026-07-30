@@ -8,11 +8,11 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from app.compare import compare_papers
+from app.research.compare import compare_papers
 from app.config import Settings, get_settings
-from app.discovery import discover_papers
-from app.qa import answer_paper_question
-from app.retrieval import retrieve
+from app.research.discovery import discover_papers
+from app.rag.qa import answer_paper_question
+from app.rag.retrieval import retrieve
 
 logger = logging.getLogger(__name__)
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.chunking import ChunkingConfig, chunk_paper_document, estimate_tokens
+from app.ingestion.chunking import ChunkingConfig, chunk_paper_document, estimate_tokens
 from app.schemas import PaperDocument, TextElement, VisualElement
 
 

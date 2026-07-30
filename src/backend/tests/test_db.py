@@ -13,7 +13,7 @@ from app.db.repository import PaperRepository
 from app.db.session import init_db, reset_engine, session_scope
 from app.main import app
 from app.schemas import ArtifactPaths, BoundingBox, PaperDocument, TextElement, VisualElement
-from app.storage import LocalStorage
+from app.infrastructure.storage import LocalStorage
 
 
 @pytest.fixture()

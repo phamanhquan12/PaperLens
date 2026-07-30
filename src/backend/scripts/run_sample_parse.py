@@ -16,8 +16,8 @@ def main() -> int:
         return 1
 
     from app.config import Settings
-    from app.pipeline import ingest_pdf_bytes
-    from app.storage import LocalStorage
+    from app.ingestion.pipeline import ingest_pdf_bytes
+    from app.infrastructure.storage import LocalStorage
 
     out = ROOT / "runtime" / "outputs" / "integration_sample"
     out.mkdir(parents=True, exist_ok=True)

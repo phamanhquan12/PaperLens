@@ -7,9 +7,9 @@ import json
 import pytest
 
 from app.config import Settings
-from app.luna import LunaClient, LunaDisabledError, mock_enrichment
+from app.ingestion.luna import LunaClient, LunaDisabledError, mock_enrichment
 from app.schemas import VisualElement
-from app.storage import LocalStorage
+from app.infrastructure.storage import LocalStorage
 
 
 def _settings(**kwargs) -> Settings:

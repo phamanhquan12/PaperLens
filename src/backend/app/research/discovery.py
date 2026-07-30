@@ -14,7 +14,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
-from app.storage import StorageBackend, get_storage
+from app.infrastructure.storage import StorageBackend, get_storage
 
 logger = logging.getLogger(__name__)
 

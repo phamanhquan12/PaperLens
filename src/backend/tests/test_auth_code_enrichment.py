@@ -9,13 +9,13 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 
 from app.auth import current_user
-from app.code_tools import build_code_tools
+from app.tools.code_tools import build_code_tools
 from app.config import Settings
 from app.db.agent_repository import AgentConversationRepository
 from app.db.session import init_db
 from app.schemas import PaperDocument, TextElement
-from app.storage import LocalStorage
-from app.text_enrichment import SectionTextEnrichment, enrich_cleaned_text
+from app.infrastructure.storage import LocalStorage
+from app.ingestion.text_enrichment import SectionTextEnrichment, enrich_cleaned_text
 
 
 def test_supabase_hs256_token_resolves_account():
@@ -102,7 +102,7 @@ class _StructuredModel:
 
 
 def test_cleaned_text_enrichment_is_bounded_and_cached(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.text_enrichment._model", lambda settings: _StructuredModel())
+    monkeypatch.setattr("app.ingestion.text_enrichment._model", lambda settings: _StructuredModel())
     settings = Settings(
         _env_file=None,
         text_enrichment_enabled=True,

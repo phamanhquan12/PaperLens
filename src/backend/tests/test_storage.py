@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.storage import LocalStorage, PathTraversalError
+from app.infrastructure.storage import LocalStorage, PathTraversalError
 
 
 def test_save_and_read_bytes(tmp_path):

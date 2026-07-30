@@ -10,17 +10,17 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from app.assets import extract_assets
-from app.chunking import chunk_paper_document, persist_chunks
-from app.cleaner import audit_to_csv, build_audit_and_clean
+from app.ingestion.assets import extract_assets
+from app.ingestion.chunking import chunk_paper_document, persist_chunks
+from app.ingestion.cleaner import audit_to_csv, build_audit_and_clean
 from app.config import Settings, get_settings
 from app.db.models import Job
 from app.db.repository import PaperRepository
 from app.db.session import session_scope
-from app.embeddings import index_paper_chunks
-from app.parser import DoclingParser, is_pdf_bytes, sanitize_filename
+from app.rag.embeddings import index_paper_chunks
+from app.ingestion.parser import DoclingParser, is_pdf_bytes, sanitize_filename
 from app.schemas import ArtifactPaths, IngestionResponse, PaperDocument
-from app.storage import (
+from app.infrastructure.storage import (
     StorageBackend,
     get_storage,
     paper_meta_key,
@@ -28,7 +28,7 @@ from app.storage import (
     paper_parsed_key,
     paper_raw_pdf_key,
 )
-from app.text_enrichment import enrich_cleaned_text
+from app.ingestion.text_enrichment import enrich_cleaned_text
 
 logger = logging.getLogger(__name__)
 

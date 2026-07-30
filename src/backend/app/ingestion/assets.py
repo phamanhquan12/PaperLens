@@ -10,7 +10,7 @@ from PIL import Image
 
 from app.config import Settings, get_settings
 from app.schemas import BoundingBox, VisualElement
-from app.storage import StorageBackend, paper_asset_key
+from app.infrastructure.storage import StorageBackend, paper_asset_key
 
 logger = logging.getLogger(__name__)
 

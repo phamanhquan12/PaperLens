@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from app.config import Settings
-from app.pipeline import ingest_pdf_bytes
-from app.storage import LocalStorage
+from app.ingestion.pipeline import ingest_pdf_bytes
+from app.infrastructure.storage import LocalStorage
 
 SAMPLE = Path(__file__).resolve().parents[3] / "1078_Beyond_Calibration_Improv.pdf"
 

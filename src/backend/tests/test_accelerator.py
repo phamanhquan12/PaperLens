@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app import accelerator
+from app.infrastructure import accelerator
 
 
 def test_accelerator_status_reports_usable_cuda(monkeypatch):

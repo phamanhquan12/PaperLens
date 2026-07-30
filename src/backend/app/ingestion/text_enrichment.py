@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings
 from app.schemas import PaperDocument
-from app.storage import StorageBackend
+from app.infrastructure.storage import StorageBackend
 
 
 class SectionTextEnrichment(BaseModel):

@@ -13,30 +13,42 @@ from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
     BaseMessage,
-    HumanMessage,
     ToolMessage,
 )
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
-from app.compare import compare_papers
-from app.code_tools import build_code_tools
 from app.config import Settings, get_settings
-from app.db.agent_repository import AgentConversationRepository
-from app.db.session import session_scope
-from app.discovery import discover_papers
-from app.guardrails import (
+from app.harness.context import (
+    build_human_message,
+    content_text,
+    get_agent_conversation,
+    load_history,
+    save_history,
+)
+from app.harness.guardrails import (
     ValidatedImage,
     apply_output_guardrails,
     guardrail_token,
 )
-from app.math_tools import build_math_tools
-from app.qa import answer_paper_question
-from app.research_graph import run_research
+from app.infrastructure.storage import get_storage, paper_normalized_key
+from app.rag.qa import answer_paper_question
+from app.research.compare import compare_papers
+from app.research.discovery import discover_papers
+from app.research.research_graph import run_research
 from app.schemas import PaperDocument
-from app.storage import get_storage, paper_normalized_key
+from app.tools.code_tools import build_code_tools
+from app.tools.math_tools import build_math_tools
 
 logger = logging.getLogger(__name__)
+
+# Re-export conversation helpers used by API and tests.
+__all__ = [
+    "build_tools",
+    "get_agent_conversation",
+    "run_agent",
+    "stream_agent",
+]
 
 
 def _model(settings: Settings) -> ChatOpenAI:
@@ -230,184 +242,6 @@ def _create_graph(
     )
 
 
-def _content_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(
-            str(block.get("text") or "")
-            for block in content
-            if isinstance(block, dict) and block.get("type") in {"text", "output_text"}
-        )
-    return str(content or "")
-
-
-def _build_human_message(
-    message: str,
-    *,
-    image: ValidatedImage | None = None,
-) -> HumanMessage:
-    if image is None:
-        return HumanMessage(content=message)
-    blocks: list[dict[str, Any]] = []
-    if message:
-        blocks.append({"type": "text", "text": message})
-    else:
-        blocks.append({"type": "text", "text": "Please analyze the attached image."})
-    blocks.append(
-        {
-            "type": "image_url",
-            "image_url": {"url": image.data_url},
-        }
-    )
-    return HumanMessage(content=blocks)
-
-
-def _serialize_message(msg: BaseMessage) -> dict[str, Any]:
-    if isinstance(msg, HumanMessage):
-        meta: dict[str, Any] = {}
-        content = msg.content
-        if isinstance(content, list):
-            text = _content_text(content)
-            has_image = any(
-                isinstance(block, dict)
-                and block.get("type") in {"image_url", "image"}
-                for block in content
-            )
-            if has_image:
-                meta["has_image"] = True
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") == "image_url":
-                        url = (block.get("image_url") or {}).get("url") or ""
-                        if isinstance(url, str) and url.startswith("data:"):
-                            mime = url[5:].split(";", 1)[0].lower()
-                            meta["image_mime"] = mime
-                        # Intentionally omit base64 payload from persistence.
-                        break
-            return {
-                "role": "human",
-                "content": text,
-                "message_metadata": meta or None,
-            }
-        return {"role": "human", "content": _content_text(content)}
-
-    if isinstance(msg, AIMessage):
-        tool_calls = []
-        for call in msg.tool_calls or []:
-            tool_calls.append(
-                {
-                    "name": call.get("name"),
-                    "args": call.get("args") or {},
-                    "id": call.get("id"),
-                    "type": call.get("type") or "tool_call",
-                }
-            )
-        return {
-            "role": "ai",
-            "content": _content_text(msg.content),
-            "tool_calls": tool_calls or None,
-        }
-
-    if isinstance(msg, ToolMessage):
-        artifact = msg.artifact if isinstance(msg.artifact, dict) else None
-        return {
-            "role": "tool",
-            "content": _content_text(msg.content),
-            "tool_name": msg.name,
-            "tool_call_id": msg.tool_call_id,
-            "status": msg.status,
-            "artifact": artifact,
-        }
-
-    return {"role": "human", "content": _content_text(getattr(msg, "content", ""))}
-
-
-def _deserialize_message(record: dict[str, Any]) -> BaseMessage:
-    role = record.get("role")
-    content = record.get("content") or ""
-    if role == "human":
-        # Restored turns never rehydrate image bytes — text-only for replay.
-        return HumanMessage(content=content)
-    if role == "ai":
-        kwargs: dict[str, Any] = {"content": content}
-        tool_calls = record.get("tool_calls") or []
-        if tool_calls:
-            kwargs["tool_calls"] = tool_calls
-        return AIMessage(**kwargs)
-    if role == "tool":
-        return ToolMessage(
-            content=content,
-            name=record.get("tool_name") or "",
-            tool_call_id=record.get("tool_call_id") or "",
-            status=record.get("status") or "success",
-            artifact=record.get("artifact"),
-        )
-    return HumanMessage(content=content)
-
-
-def _load_history(
-    conversation_id: str, settings: Settings, *, user_id: str = "local-user"
-) -> list[BaseMessage]:
-    try:
-        with session_scope(settings) as session:
-            repo = AgentConversationRepository(session)
-            conversation = repo.get_with_messages(conversation_id, user_id=user_id)
-            if conversation is None:
-                return []
-            records = [
-                {
-                    "role": m.role,
-                    "content": m.content,
-                    "tool_name": m.tool_name,
-                    "tool_call_id": m.tool_call_id,
-                    "tool_calls": m.tool_calls,
-                    "artifact": m.artifact,
-                    "status": m.status,
-                    "message_metadata": m.message_metadata,
-                }
-                for m in conversation.messages
-            ]
-    except Exception:
-        logger.exception("Failed to load agent conversation %s", conversation_id)
-        return []
-    return [_deserialize_message(item) for item in records]
-
-
-def _save_history(
-    conversation_id: str,
-    messages: list[BaseMessage],
-    *,
-    selected_papers: list[str],
-    settings: Settings,
-    human_image: ValidatedImage | None = None,
-    user_id: str = "local-user",
-) -> None:
-    records = [_serialize_message(m) for m in messages]
-    # Attach image metadata to the latest human turn without storing bytes.
-    if human_image is not None:
-        for item in reversed(records):
-            if item.get("role") == "human":
-                meta = dict(item.get("message_metadata") or {})
-                meta["has_image"] = True
-                meta["image_mime"] = human_image.mime
-                meta["image_decoded_bytes"] = human_image.decoded_size
-                item["message_metadata"] = meta
-                break
-    try:
-        with session_scope(settings) as session:
-            AgentConversationRepository(session).replace_messages(
-                conversation_id,
-                records,
-                selected_papers=selected_papers,
-                keep_last=settings.agent_history_limit,
-                user_id=user_id,
-            )
-    except Exception:
-        logger.exception("Failed to persist agent conversation %s", conversation_id)
-
-
 def _collect_result(
     messages: list[BaseMessage],
     *,
@@ -455,7 +289,7 @@ def _collect_result(
     return {
         "conversation_id": conversation_id,
         "answer": (
-            _content_text(final.content)
+            content_text(final.content)
             if final
             else "I could not produce a response."
         ),
@@ -464,29 +298,6 @@ def _collect_result(
         "tool_calls": tool_calls,
         "artifacts": artifacts,
     }
-
-
-def get_agent_conversation(
-    conversation_id: str,
-    *,
-    settings: Settings | None = None,
-    user_id: str = "local-user",
-) -> dict[str, Any] | None:
-    cfg = settings or get_settings()
-    with session_scope(cfg) as session:
-        repo = AgentConversationRepository(session)
-        conversation = repo.get_with_messages(conversation_id, user_id=user_id)
-        if conversation is None:
-            return None
-        turns = repo.chat_turns(conversation_id, user_id=user_id)
-        return {
-            "conversation_id": conversation.id,
-            "title": conversation.title,
-            "created_at": conversation.created_at,
-            "updated_at": conversation.updated_at,
-            "selected_papers": list(conversation.selected_papers or []),
-            "turns": turns,
-        }
 
 
 def run_agent(
@@ -501,8 +312,8 @@ def run_agent(
     cfg = settings or get_settings()
     selected = list(dict.fromkeys(selected_papers or []))
     cid = conversation_id or str(uuid4())
-    history = _load_history(cid, cfg, user_id=user_id)
-    human = _build_human_message(message, image=image)
+    history = load_history(cid, cfg, user_id=user_id)
+    human = build_human_message(message, image=image)
     graph = (
         _create_graph(cfg, selected, user_id=user_id)
         if user_id != "local-user"
@@ -512,7 +323,7 @@ def run_agent(
         {"messages": [*history, human]}
     )
     messages = list(output["messages"])
-    _save_history(
+    save_history(
         cid,
         messages,
         selected_papers=selected,
@@ -541,8 +352,8 @@ def stream_agent(
     cfg = settings or get_settings()
     selected = list(dict.fromkeys(selected_papers or []))
     cid = conversation_id or str(uuid4())
-    history = _load_history(cid, cfg, user_id=user_id)
-    human = _build_human_message(message, image=image)
+    history = load_history(cid, cfg, user_id=user_id)
+    human = build_human_message(message, image=image)
     inputs = {"messages": [*history, human]}
     final_messages: list[BaseMessage] = []
     observed_messages = len(inputs["messages"])
@@ -564,7 +375,7 @@ def stream_agent(
                 # emit message chunks. Only root agent-model tokens belong in chat.
                 if str((metadata or {}).get("langgraph_node") or "") != "model":
                     continue
-                text = _content_text(chunk.content)
+                text = content_text(chunk.content)
                 if text:
                     yield {
                         "type": "token",
@@ -589,7 +400,7 @@ def stream_agent(
                 }
         observed_messages = len(final_messages)
 
-    _save_history(
+    save_history(
         cid,
         final_messages,
         selected_papers=selected,

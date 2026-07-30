@@ -10,7 +10,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
-from app.retrieval import get_langchain_retriever, retrieve
+from app.rag.retrieval import get_langchain_retriever, retrieve
 
 logger = logging.getLogger(__name__)
 

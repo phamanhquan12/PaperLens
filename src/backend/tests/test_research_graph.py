@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from app.chunking import ChunkingConfig, chunk_paper_document, persist_chunks
+from app.ingestion.chunking import ChunkingConfig, chunk_paper_document, persist_chunks
 from app.config import Settings, get_settings
 from app.db.repository import PaperRepository
 from app.db.session import init_db, reset_engine, session_scope
-from app.embeddings import index_paper_chunks
-from app.research_graph import route_after_library, run_research
+from app.rag.embeddings import index_paper_chunks
+from app.research.research_graph import route_after_library, run_research
 from app.schemas import ArtifactPaths, PaperDocument, TextElement
 
 

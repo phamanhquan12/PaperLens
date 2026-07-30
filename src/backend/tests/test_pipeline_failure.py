@@ -6,8 +6,8 @@ from sqlalchemy import select
 from app.config import Settings
 from app.db.models import Job, Paper
 from app.db.session import init_db, reset_engine, session_scope
-from app.pipeline import ingest_pdf_bytes
-from app.storage import LocalStorage
+from app.ingestion.pipeline import ingest_pdf_bytes
+from app.infrastructure.storage import LocalStorage
 
 
 def test_unexpected_parse_failure_updates_paper_and_job(tmp_path, monkeypatch):
@@ -24,7 +24,7 @@ def test_unexpected_parse_failure_updates_paper_and_job(tmp_path, monkeypatch):
     def fail_convert(self, pdf_path):
         raise RuntimeError("synthetic parser crash")
 
-    monkeypatch.setattr("app.pipeline.DoclingParser.convert", fail_convert)
+    monkeypatch.setattr("app.ingestion.pipeline.DoclingParser.convert", fail_convert)
     storage = LocalStorage(tmp_path / "objects")
 
     with pytest.raises(RuntimeError, match="synthetic parser crash"):

@@ -10,7 +10,15 @@ workflows.
 ```text
 src/
   backend/
-    app/        FastAPI, Docling, LangChain and LangGraph application
+    app/
+      main.py, routes.py, cli.py, config.py, schemas.py, auth.py
+      db/              SQLAlchemy models and repositories
+      harness/         agent runtime, conversation context, guardrails
+      tools/           coding and math LangChain tools
+      ingestion/       Docling parse, clean, assets, chunk, enrich
+      rag/             embeddings, retrieval, grounded QA
+      research/        discovery, compare, LangGraph workflow
+      infrastructure/  storage, accelerator, observability
     tests/      backend test suite
     scripts/    parsing, evaluation and database utilities
     evaluation/ retrieval and QA datasets/results

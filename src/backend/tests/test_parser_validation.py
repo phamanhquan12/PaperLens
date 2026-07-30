@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.parser import validate_conversion_result
+from app.ingestion.parser import validate_conversion_result
 
 
 def _status(name: str):

@@ -20,7 +20,7 @@ from app.schemas import (
     VisualEnrichment,
     utc_now,
 )
-from app.storage import StorageBackend, paper_enrichment_key
+from app.infrastructure.storage import StorageBackend, paper_enrichment_key
 
 logger = logging.getLogger(__name__)
 

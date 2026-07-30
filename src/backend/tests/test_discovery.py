@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.config import Settings, get_settings
-from app.discovery import (
+from app.research.discovery import (
     DiscoveryPaper,
     discover_papers,
     find_library_duplicates,
@@ -15,7 +15,7 @@ from app.discovery import (
 )
 from app.db.repository import PaperRepository
 from app.db.session import init_db, reset_engine, session_scope
-from app.storage import LocalStorage
+from app.infrastructure.storage import LocalStorage
 
 
 @pytest.fixture()
@@ -53,7 +53,7 @@ def disc_env(tmp_path: Path, monkeypatch):
             ),
         ]
 
-    monkeypatch.setattr("app.discovery.search_arxiv", fake_arxiv)
+    monkeypatch.setattr("app.research.discovery.search_arxiv", fake_arxiv)
     yield settings, store
     reset_engine()
     get_settings.cache_clear()
@@ -120,7 +120,7 @@ def test_arxiv_uses_https_and_redirect_safe_client(monkeypatch):
             captured["url"] = url
             return FakeResponse()
 
-    monkeypatch.setattr("app.discovery.httpx.Client", FakeClient)
+    monkeypatch.setattr("app.research.discovery.httpx.Client", FakeClient)
     results = search_arxiv("calibration")
 
     assert captured["url"].startswith("https://export.arxiv.org/")
