@@ -1,4 +1,4 @@
-"""Supabase JWT authentication dependency with a local-development fallback."""
+"""Supabase JWT authentication with guest-trial and local-development fallbacks."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
 
 from app.config import Settings, get_settings
+from app.guest import GuestQuotaSnapshot, resolve_guest_token
 
 
 _bearer = HTTPBearer(auto_error=False)
@@ -20,6 +21,8 @@ _bearer = HTTPBearer(auto_error=False)
 class CurrentUser:
     user_id: str
     email: str | None = None
+    is_guest: bool = False
+    guest_quota: GuestQuotaSnapshot | None = None
 
 
 @lru_cache(maxsize=4)
@@ -39,13 +42,23 @@ def current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
     settings: Settings = Depends(get_settings),
 ) -> CurrentUser:
-    """Verify a Supabase access token and return its stable account identity."""
+    """Verify a Supabase or guest access token and return its account identity."""
     if not settings.auth_enabled:
-        return CurrentUser(user_id="local-user", email=None)
+        return CurrentUser(user_id="local-user", email=None, is_guest=False)
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise _unauthorized()
 
     token = credentials.credentials
+    guest = resolve_guest_token(token, settings=settings)
+    if guest is not None:
+        user_id, quota = guest
+        return CurrentUser(
+            user_id=user_id,
+            email=None,
+            is_guest=True,
+            guest_quota=quota,
+        )
+
     issuer = settings.supabase_jwt_issuer
     if not issuer and settings.supabase_auth_url:
         issuer = f"{settings.supabase_auth_url.rstrip('/')}/auth/v1"
@@ -76,4 +89,4 @@ def current_user(
     user_id = str(claims.get("sub") or "").strip()
     if not user_id:
         raise _unauthorized("Access token has no account identity")
-    return CurrentUser(user_id=user_id, email=claims.get("email"))
+    return CurrentUser(user_id=user_id, email=claims.get("email"), is_guest=False)

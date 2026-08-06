@@ -15,6 +15,7 @@ from app.auth import CurrentUser, current_user
 from app.db.agent_repository import AgentConversationRepository
 from app.db.repository import PaperRepository
 from app.db.session import session_scope
+from app.guest import consume_guest_quota, create_guest_session, guest_trial_available
 from app.ingestion.luna import LunaClient, LunaDisabledError
 from app.ingestion.pipeline import IngestionError, ingest_pdf_bytes
 from app.schemas import (
@@ -26,12 +27,15 @@ from app.schemas import (
     AgentResponse,
     ArtifactPaths,
     AssetManifest,
+    AuthMeResponse,
     CompareRequest,
     DeletePaperResponse,
     DiscoverRequest,
     EnrichRequest,
     EnrichResponse,
     EnrichResultItem,
+    GuestQuota,
+    GuestSessionResponse,
     HealthResponse,
     IndexRequest,
     IngestionResponse,
@@ -101,6 +105,13 @@ def capabilities(settings: Settings = Depends(get_settings)) -> dict[str, Any]:
             "private_chain_of_thought_exposed": False,
         },
         "account_auth": settings.auth_enabled,
+        "guest_trial": {
+            "enabled": guest_trial_available(settings),
+            "max_queries": settings.guest_max_queries,
+            "max_papers": settings.guest_max_papers,
+            "max_images": settings.guest_max_images,
+            "session_ttl_hours": settings.guest_session_ttl_hours,
+        },
         "visual_enrichment": settings.luna_enabled and settings.allow_external_api,
         "text_enrichment": (
             settings.text_enrichment_enabled and settings.allow_external_api
@@ -110,6 +121,55 @@ def capabilities(settings: Settings = Depends(get_settings)) -> dict[str, Any]:
             settings.docling_accelerator_device
         ),
     }
+
+
+@router.post("/auth/guest", response_model=GuestSessionResponse)
+def create_guest_auth(settings: Settings = Depends(get_settings)) -> GuestSessionResponse:
+    """Issue a browser-bound anonymous trial session with hard usage quotas."""
+    access_token, user_id, snapshot = create_guest_session(settings)
+    return GuestSessionResponse(
+        access_token=access_token,
+        expires_at=int(snapshot.expires_at.timestamp()),
+        user={
+            "id": user_id,
+            "email": None,
+            "is_guest": True,
+        },
+        guest_quota=GuestQuota.model_validate(snapshot.as_dict()),
+    )
+
+
+@router.get("/auth/me", response_model=AuthMeResponse)
+def auth_me(user: CurrentUser = Depends(current_user)) -> AuthMeResponse:
+    quota = None
+    if user.is_guest and user.guest_quota is not None:
+        quota = GuestQuota.model_validate(user.guest_quota.as_dict())
+    return AuthMeResponse(
+        user_id=user.user_id,
+        email=user.email,
+        is_guest=user.is_guest,
+        guest_quota=quota,
+    )
+
+
+def _consume_guest_if_needed(
+    user: CurrentUser,
+    settings: Settings,
+    *,
+    queries: int = 0,
+    papers: int = 0,
+    images: int = 0,
+) -> GuestQuota | None:
+    if not user.is_guest:
+        return None
+    snapshot = consume_guest_quota(
+        user.user_id,
+        settings=settings,
+        queries=queries,
+        papers=papers,
+        images=images,
+    )
+    return GuestQuota.model_validate(snapshot.as_dict())
 
 
 @router.get("/papers", response_model=PaperLibraryResponse)
@@ -184,6 +244,7 @@ async def upload_paper(
         if not is_pdf_bytes(data):
             raise HTTPException(status_code=400, detail="Invalid PDF signature")
 
+        _consume_guest_if_needed(user, settings, papers=1)
         paper_id = str(uuid.uuid4())
         raw_key = paper_raw_pdf_key(paper_id)
         storage.save_bytes(raw_key, data, content_type="application/pdf")
@@ -224,6 +285,7 @@ async def upload_paper(
         )
 
     try:
+        _consume_guest_if_needed(user, settings, papers=1)
         ingest_kwargs = {
             "filename": filename,
             "settings": settings,
@@ -232,6 +294,8 @@ async def upload_paper(
         if settings.auth_enabled:
             ingest_kwargs["user_id"] = user.user_id
         return ingest_pdf_bytes(data, **ingest_kwargs)
+    except HTTPException:
+        raise
     except IngestionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -644,6 +708,12 @@ def agent_endpoint(
             image_data_url=body.image,
             settings=settings,
         )
+        guest_quota = _consume_guest_if_needed(
+            user,
+            settings,
+            queries=1,
+            images=1 if validated.image is not None else 0,
+        )
         if settings.auth_enabled:
             with session_scope(settings) as session:
                 repo = PaperRepository(session)
@@ -664,9 +734,12 @@ def agent_endpoint(
         }
         if settings.auth_enabled:
             agent_kwargs["user_id"] = user.user_id
-        return AgentResponse.model_validate(
+        result = AgentResponse.model_validate(
             run_agent(validated.message, **agent_kwargs)
         )
+        if guest_quota is not None:
+            result.guest_quota = guest_quota.model_dump(mode="json")
+        return result
     except GuardrailError as exc:
         raise HTTPException(
             status_code=400,
@@ -688,6 +761,12 @@ def agent_stream_endpoint(
             selected_papers=body.selected_papers,
             image_data_url=body.image,
             settings=settings,
+        )
+        guest_quota = _consume_guest_if_needed(
+            user,
+            settings,
+            queries=1,
+            images=1 if validated.image is not None else 0,
         )
         if settings.auth_enabled:
             with session_scope(settings) as session:
@@ -718,6 +797,12 @@ def agent_stream_endpoint(
             if settings.auth_enabled:
                 agent_kwargs["user_id"] = user.user_id
             for event in stream_agent(validated.message, **agent_kwargs):
+                if (
+                    guest_quota is not None
+                    and isinstance(event, dict)
+                    and event.get("type") == "done"
+                ):
+                    event = {**event, "guest_quota": guest_quota.model_dump(mode="json")}
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except GuardrailError as exc:
             error = {

@@ -96,6 +96,12 @@ verifies access tokens against Supabase JWKS and does not require a secret or
 service-role key. Existing pre-v0.2 rows remain assigned to `local-user` and
 must be reassigned or removed before production account mode is enabled.
 
+When account mode is enabled, visitors can also choose **Continue without an
+account**. That creates a browser-bound guest session with hard limits
+(default: 10 chat queries, 2 paper uploads, 2 image uploads) that consume the
+deployment owner's configured LLM keys. Guest papers and chats stay isolated
+from signed-in accounts. Set `GUEST_TRIAL_ENABLED=false` to disable the option.
+
 ## Run locally
 
 Backend:

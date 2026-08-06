@@ -198,6 +198,24 @@ class AgentConversation(Base):
     )
 
 
+class GuestSession(Base):
+    """Anonymous trial session with hard usage quotas."""
+
+    __tablename__ = "guest_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    # Stable ownership key used on papers / conversations: guest-<id>
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    queries_used: Mapped[int] = mapped_column(Integer, default=0)
+    papers_used: Mapped[int] = mapped_column(Integer, default=0)
+    images_used: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class AgentMessage(Base):
     """Serializable agent turn for history restore and LangChain replay."""
 

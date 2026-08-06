@@ -39,6 +39,7 @@
           </select>
         </div>
         <button class="button ghost small" id="refresh-library">Refresh</button>
+        <div class="guest-quota hidden" id="guest-quota" title="Guest trial remaining"></div>
         <button class="account-button hidden" id="account-button" type="button" title="Account"><span id="account-avatar">A</span><span id="account-label">Account</span></button>
       </header>
 
@@ -124,6 +125,7 @@
             </form>
             <div id="agent-upload-state" class="agent-upload-state composer-upload-state"></div>
             <small class="composer-hint">Enter to send · Shift+Enter for a new line</small>
+            <small class="composer-hint guest-quota-hint hidden" id="guest-quota-hint"></small>
           </div>
           <aside class="agent-output card">
             <div class="tabs" id="agent-output-tabs"><button class="active" data-agent-tab="results">Results</button><button data-agent-tab="trace">Tool trace</button></div>
@@ -220,12 +222,14 @@
     <form class="modal auth-modal" id="auth-form">
       <span class="brand-mark">P</span>
       <h2>Sign in to PaperLens</h2>
-      <p>Your papers and research sessions are private to your account.</p>
+      <p>Your papers and research sessions are private to your account. Guests can try a limited demo using the shared deployment.</p>
       <label>Email<input id="auth-email" type="email" autocomplete="email" required></label>
       <label>Password<input id="auth-password" type="password" autocomplete="current-password" minlength="6" required></label>
       <div id="auth-error" class="auth-error"></div>
       <button class="button primary wide" type="submit">Sign in</button>
       <button class="button ghost wide" id="auth-signup" type="button">Create account</button>
+      <button class="button ghost wide" id="auth-guest" type="button">Continue without an account</button>
+      <p class="auth-guest-note" id="auth-guest-note">Guest trial: 10 chat queries, 2 paper uploads, and 2 image uploads.</p>
     </form>
   </div>
   <script src="/config.js"></script>

@@ -88,6 +88,13 @@ class Settings(BaseSettings):
     supabase_jwt_audience: str = "authenticated"
     supabase_jwt_issuer: str | None = None
 
+    # Anonymous trial accounts for try-before-signup demos.
+    guest_trial_enabled: bool = True
+    guest_max_queries: int = 10
+    guest_max_papers: int = 2
+    guest_max_images: int = 2
+    guest_session_ttl_hours: int = 72
+
     embedding_provider: str = Field(
         default="hashing",
         validation_alias=AliasChoices("EMBEDDING_PROVIDER", "BIDPILOT_EMBEDDING_PROVIDER"),

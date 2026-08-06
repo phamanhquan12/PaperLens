@@ -214,6 +214,35 @@ class AgentResponse(BaseModel):
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     guardrail_notes: list[str] = Field(default_factory=list)
+    guest_quota: dict[str, Any] | None = None
+
+
+class GuestQuota(BaseModel):
+    queries_used: int
+    papers_used: int
+    images_used: int
+    queries_limit: int
+    papers_limit: int
+    images_limit: int
+    queries_remaining: int
+    papers_remaining: int
+    images_remaining: int
+    expires_at: str
+
+
+class GuestSessionResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_at: int
+    user: dict[str, Any]
+    guest_quota: GuestQuota
+
+
+class AuthMeResponse(BaseModel):
+    user_id: str
+    email: str | None = None
+    is_guest: bool = False
+    guest_quota: GuestQuota | None = None
 
 
 class AgentConversationTurn(BaseModel):

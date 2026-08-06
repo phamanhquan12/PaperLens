@@ -26,6 +26,8 @@ const state = {
   agentImage: null,
   agentSessions: [],
   authSession: readStoredJson(AUTH_SESSION_KEY, null),
+  guestQuota: null,
+  guestTrial: null,
   ingestionJobs: readStoredJson(INGESTION_JOBS_KEY, {})
 };
 const $ = (q, root = document) => root.querySelector(q);
@@ -54,14 +56,55 @@ async function api(path, options = {}) {
       : (detail || `Request failed (${response.status})`);
     const error = new Error(message);
     error.status = response.status;
+    error.detail = detail;
+    if (detail && typeof detail === "object" && detail.quota) {
+      applyGuestQuota(detail.quota);
+    }
+    if (response.status === 401 && isGuestSession()) {
+      storeAuthSession(null);
+      renderAccount();
+      $("#auth-modal").classList.remove("hidden");
+    }
     throw error;
   }
   return data;
 }
+function isGuestSession() {
+  return Boolean(state.authSession?.user?.is_guest || String(state.authSession?.access_token || "").startsWith("guest."));
+}
+function applyGuestQuota(quota) {
+  if (!quota) return;
+  state.guestQuota = quota;
+  if (state.authSession) {
+    state.authSession = { ...state.authSession, guest_quota: quota };
+    localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(state.authSession));
+  }
+  renderGuestQuota();
+}
+function renderGuestQuota() {
+  const chip = $("#guest-quota");
+  const hint = $("#guest-quota-hint");
+  const quota = state.guestQuota || state.authSession?.guest_quota || null;
+  const show = isGuestSession() && quota;
+  if (chip) {
+    chip.classList.toggle("hidden", !show);
+    if (show) {
+      chip.textContent = `Guest · ${quota.queries_remaining}/${quota.queries_limit} queries · ${quota.papers_remaining}/${quota.papers_limit} papers · ${quota.images_remaining}/${quota.images_limit} images`;
+    }
+  }
+  if (hint) {
+    hint.classList.toggle("hidden", !show);
+    if (show) {
+      hint.textContent = `Trial remaining: ${quota.queries_remaining} chat queries, ${quota.papers_remaining} paper uploads, ${quota.images_remaining} image uploads. Create an account for full access.`;
+    }
+  }
+}
 function storeAuthSession(session) {
   state.authSession = session || null;
+  state.guestQuota = session?.guest_quota || null;
   if (session) localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(session));
   else localStorage.removeItem(AUTH_SESSION_KEY);
+  renderGuestQuota();
 }
 async function authRequest(path, body) {
   const response = await fetch(`${AUTH_URL}${path}`, {
@@ -74,7 +117,17 @@ async function authRequest(path, body) {
   return data;
 }
 async function ensureAuthSession() {
-  if (!AUTH_CONFIGURED || !state.authSession) return;
+  if (!state.authSession) return;
+  if (isGuestSession()) {
+    const expiresAt = Number(state.authSession.expires_at || 0);
+    if (expiresAt && expiresAt * 1000 <= Date.now()) {
+      storeAuthSession(null);
+      $("#auth-modal").classList.remove("hidden");
+      throw new Error("Your guest trial expired. Sign in or start a new guest session.");
+    }
+    return;
+  }
+  if (!AUTH_CONFIGURED) return;
   const expiresAt = Number(state.authSession.expires_at || 0);
   if (!expiresAt || expiresAt * 1000 > Date.now() + 60000) return;
   try {
@@ -89,11 +142,13 @@ async function ensureAuthSession() {
 }
 function renderAccount() {
   const button = $("#account-button");
-  if (!AUTH_CONFIGURED) { button.classList.add("hidden"); return; }
+  if (!AUTH_CONFIGURED && !isGuestSession()) { button.classList.add("hidden"); renderGuestQuota(); return; }
+  const guest = isGuestSession();
   const email = state.authSession?.user?.email || "";
   button.classList.toggle("hidden", !state.authSession);
-  $("#account-label").textContent = email || "Account";
-  $("#account-avatar").textContent = (email[0] || "A").toUpperCase();
+  $("#account-label").textContent = guest ? "Guest trial" : (email || "Account");
+  $("#account-avatar").textContent = guest ? "G" : (email[0] || "A").toUpperCase();
+  renderGuestQuota();
 }
 async function submitAuth(mode = "signin") {
   const email = $("#auth-email").value.trim(), password = $("#auth-password").value;
@@ -112,6 +167,64 @@ async function submitAuth(mode = "signin") {
     await restoreAgentConversation();
     resumeIngestionJobs();
   } catch (error) { $("#auth-error").textContent = error.message; }
+}
+async function continueAsGuest() {
+  $("#auth-error").textContent = "";
+  const button = $("#auth-guest");
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch(`${API}/auth/guest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = result.detail;
+      throw new Error(
+        (detail && typeof detail === "object")
+          ? (detail.message || detail.error || JSON.stringify(detail))
+          : (detail || `Guest trial unavailable (${response.status})`)
+      );
+    }
+    storeAuthSession({
+      access_token: result.access_token,
+      token_type: result.token_type || "bearer",
+      expires_at: result.expires_at,
+      user: result.user,
+      guest_quota: result.guest_quota
+    });
+    applyGuestQuota(result.guest_quota);
+    $("#auth-modal").classList.add("hidden");
+    renderAccount();
+    await Promise.all([loadLibrary(), loadAgentSessions()]);
+    await restoreAgentConversation();
+    resumeIngestionJobs();
+    toast("Guest trial started. Limits apply until you create an account.", "ok");
+  } catch (error) {
+    $("#auth-error").textContent = error.message;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+async function loadCapabilities() {
+  try {
+    const caps = await fetch(`${API}/capabilities`).then(r => r.json());
+    state.guestTrial = caps.guest_trial || null;
+    const note = $("#auth-guest-note");
+    const guestButton = $("#auth-guest");
+    if (state.guestTrial?.enabled) {
+      if (note) {
+        note.textContent = `Guest trial: ${state.guestTrial.max_queries} chat queries, ${state.guestTrial.max_papers} paper uploads, and ${state.guestTrial.max_images} image uploads.`;
+      }
+      if (guestButton) guestButton.classList.remove("hidden");
+    } else if (guestButton) {
+      guestButton.classList.add("hidden");
+      if (note) note.classList.add("hidden");
+    }
+  } catch {
+    /* Capabilities are optional for local bootstrapping. */
+  }
 }
 function initializeAuth() {
   renderAccount();
@@ -478,6 +591,7 @@ async function askAgent(question) {
         if (event.conversation_id) localStorage.setItem(AGENT_CONVERSATION_KEY, event.conversation_id);
         state.agentArtifacts.push(...(event.artifacts || []));
         state.agentTrace.push(...(event.tool_calls || []));
+        if (event.guest_quota) applyGuestQuota(event.guest_quota);
         // The completed server answer is authoritative. Streaming can include
         // partial text, but must never override the validated final response.
         renderMarkdown(content, event.answer || streamed || "");
@@ -789,11 +903,13 @@ $("#pdf-file").addEventListener("change",e=>{const f=e.target.files[0],chip=$("#
 $("#upload-button").addEventListener("click",upload);$("#cancel-delete").addEventListener("click",()=>$("#confirm-modal").classList.add("hidden"));$("#confirm-delete").addEventListener("click",()=>state.deleteId&&deletePaper(state.deleteId));$("#mobile-menu").addEventListener("click",()=>$(".sidebar").classList.toggle("open"));
 $("#auth-form").addEventListener("submit",e=>{e.preventDefault();submitAuth("signin");});
 $("#auth-signup").addEventListener("click",()=>submitAuth("signup"));
-$("#account-button").addEventListener("click",()=>{storeAuthSession(null);state.papers=[];state.agentSessions=[];startNewAgentConversation();renderAccount();$("#auth-modal").classList.remove("hidden");});
+$("#auth-guest").addEventListener("click",()=>continueAsGuest());
+$("#account-button").addEventListener("click",()=>{storeAuthSession(null);state.papers=[];state.agentSessions=[];state.guestQuota=null;startNewAgentConversation();renderAccount();$("#auth-modal").classList.remove("hidden");});
 
 (async function init(){
   navigate(location.hash.slice(1)||"home");
+  await loadCapabilities();
   const authenticated = initializeAuth();
-  try { await api("/health"); $("#health-dot").classList.add("ok"); $("#health-label").textContent="API connected"; if(authenticated){await Promise.all([loadLibrary(),loadAgentSessions()]);await restoreAgentConversation();resumeIngestionJobs();} }
+  try { await api("/health"); $("#health-dot").classList.add("ok"); $("#health-label").textContent="API connected"; if(authenticated){await Promise.all([loadLibrary(),loadAgentSessions()]);await restoreAgentConversation();resumeIngestionJobs();renderGuestQuota();} }
   catch(e){$("#health-dot").classList.add("bad");$("#health-label").textContent="API unavailable";toast(`Backend unavailable: ${e.message}`,"error");}
 })();

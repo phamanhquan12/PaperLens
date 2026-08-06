@@ -113,7 +113,9 @@ options:
     if enable_auth:
         if not auth_url:
             raise ValueError("--supabase-auth-url is required with --enable-auth")
-        runtime_env += f",AUTH_ENABLED=true,SUPABASE_AUTH_URL={auth_url}"
+        runtime_env += (
+            f",AUTH_ENABLED=true,SUPABASE_AUTH_URL={auth_url},GUEST_TRIAL_ENABLED=true"
+        )
         if jwks_url:
             runtime_env += f",SUPABASE_JWKS_URL={jwks_url}"
 
